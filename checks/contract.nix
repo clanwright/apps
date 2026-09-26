@@ -233,7 +233,7 @@ let
   missingInstallation = builtins.tryEval (
     builtins.deepSeq
       (evaluate { fixture.obsidian = obsidian; } { } [ ])
-      .config.networkCore.caddy.fragments."fixture--app-livesync-couchdb".listenAddresses
+      .config.networkCore.caddy.fragments."fixture--app-obsidian".listenAddresses
       true
   );
   missingPrivate = builtins.tryEval (
@@ -274,7 +274,7 @@ let
             };
             inherit obsidian;
           };
-        } { } [ ]).config.networkCore.caddy.fragments."fixture--app-livesync-couchdb".listenAddresses
+        } { } [ ]).config.networkCore.caddy.fragments."fixture--app-obsidian".listenAddresses
         true
     );
   badPrivate =
@@ -301,6 +301,7 @@ let
     };
     obsidian = {
       instances = instances onlyObsidian;
+      serviceName = onlyObsidian.clan.config.inventory.instances."fixture--app-obsidian".module.name;
       couchdb = onlyObsidian.config.services.couchdb.enable;
       postgresql = onlyObsidian.config.services.postgresql.enable;
       caddyHosts = builtins.attrNames onlyObsidian.config.services.caddy.virtualHosts;
@@ -325,10 +326,10 @@ let
       instances = instances retained;
       couchdb = retained.config.services.couchdb.enable;
       postgresql = retained.config.services.postgresql.enable;
-      couchdbState = retained.config.clan.core.state.livesync-couchdb.folders;
+      couchdbState = retained.config.clan.core.state.obsidian.folders;
       vaultwardenState = retained.config.clan.core.state.vaultwarden-app.folders;
       vaultwardenDbState = retained.config.clan.core.state.vaultwarden-db.folders;
-      obsidianSecret = builtins.hasAttr "livesync-couchdb-admin-ini" retained.config.sops.secrets;
+      obsidianSecret = builtins.hasAttr "obsidian-admin-ini" retained.config.sops.secrets;
       vaultwardenSecret = builtins.hasAttr "vaultwarden-admin-token" retained.config.sops.secrets;
       vaultwardenSecretRestartUnits = retained.config.sops.secrets."vaultwarden-admin-token".restartUnits;
       caddyHosts = builtins.attrNames retained.config.services.caddy.virtualHosts;
@@ -388,7 +389,7 @@ let
       privateIPv6 = (badPrivate "::").success;
     };
     defaults = {
-      obsidianSecret = builtins.hasAttr "livesync-couchdb-admin-ini" onlyObsidian.config.sops.secrets;
+      obsidianSecret = builtins.hasAttr "obsidian-admin-ini" onlyObsidian.config.sops.secrets;
       vaultwardenSecret = builtins.hasAttr "vaultwarden-admin-token" onlyVaultwarden.config.sops.secrets;
       couchdbVersion = onlyObsidian.config.services.couchdb.package.version;
       postgresVersion = onlyVaultwarden.config.services.postgresql.package.version;
@@ -396,7 +397,8 @@ let
       vaultwardenPackageMatchesExport =
         onlyVaultwarden.config.services.vaultwarden.package.outPath
         == self.packages.x86_64-linux.vaultwarden.outPath;
-      couchdbState = onlyObsidian.config.clan.core.state.livesync-couchdb.folders;
+      couchdbState = onlyObsidian.config.clan.core.state.obsidian.folders;
+      obsidianAccessLog = onlyObsidian.config.networkCore.caddy.fragments."fixture--app-obsidian".logFile;
       vaultwardenState = onlyVaultwarden.config.clan.core.state.vaultwarden-app.folders;
       vaultwardenDbState = onlyVaultwarden.config.clan.core.state.vaultwarden-db.folders;
       vaultwardenRestoreOrder =
@@ -420,9 +422,21 @@ let
   check =
     assert report.none.instances == [ ];
     assert builtins.length report.obsidian.instances == 4;
+    assert builtins.elem "fixture--app-obsidian" report.obsidian.instances;
+    assert report.obsidian.serviceName == "@clanwright/apps-obsidian";
+    assert builtins.hasAttr "@clanwright/apps-obsidian" self.clan.modules;
+    assert
+      builtins.attrNames self.clan.modules == [
+        "@clanwright/apps-obsidian"
+        "@clanwright/apps-vaultwarden"
+      ];
     assert builtins.length report.vaultwarden.instances == 4;
     assert builtins.length report.both.instances == 5;
-    assert builtins.length report.retained.instances == 2;
+    assert
+      report.retained.instances == [
+        "fixture--app-obsidian"
+        "fixture--app-vaultwarden"
+      ];
     assert report.obsidian.couchdb && !report.obsidian.postgresql;
     assert !report.vaultwarden.couchdb && report.vaultwarden.postgresql;
     assert !report.retained.couchdb && !report.retained.postgresql;
@@ -470,6 +484,7 @@ let
     assert report.defaults.vaultwardenVersion == "1.37.2";
     assert report.defaults.vaultwardenPackageMatchesExport;
     assert report.defaults.couchdbState == [ "/var/lib/couchdb" ];
+    assert report.defaults.obsidianAccessLog == "/var/log/caddy/obsidian-access.log";
     assert report.defaults.vaultwardenState == [ "/var/lib/vaultwarden" ];
     assert report.defaults.vaultwardenDbState == [ "/var/backup/postgres/vaultwarden" ];
     assert builtins.elem "vaultwarden.service" report.defaults.vaultwardenRestoreOrder;

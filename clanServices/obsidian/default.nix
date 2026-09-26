@@ -2,7 +2,7 @@
 {
   _class = "clan.service";
   manifest = {
-    name = "@clanwright/apps-livesync-couchdb";
+    name = "@clanwright/apps-obsidian";
     description = "CouchDB backend for Self-hosted LiveSync";
     readme = builtins.readFile ./README.md;
   };
@@ -32,7 +32,7 @@
 
           adminConfigSecretName = lib.mkOption {
             type = lib.types.str;
-            default = "livesync-couchdb-admin-ini";
+            default = "obsidian-admin-ini";
             description = "SOPS secret name containing the CouchDB administrator INI fragment.";
           };
 
@@ -49,7 +49,7 @@
 
     perInstance =
       {
-        instanceName ? "app-livesync-couchdb",
+        instanceName ? "app-obsidian",
         settings,
         ...
       }:
@@ -69,8 +69,8 @@
               else
                 settings.acme.certName;
             liveSyncCaddyRoute = ''
-              @livesyncPaths path / /_session /obsidian /obsidian/*
-              handle @livesyncPaths {
+              @obsidianPaths path / /_session /obsidian /obsidian/*
+              handle @obsidianPaths {
                 reverse_proxy 127.0.0.1:5984
               }
               handle {
@@ -84,7 +84,7 @@
             services.clanwright.primitives.couchdb = {
               enable = true;
               inherit (settings) lifecycle adminConfigSecretName;
-              stateName = "livesync-couchdb";
+              stateName = "obsidian";
               extraConfig = {
                 couchdb = {
                   single_node = true;
@@ -110,7 +110,7 @@
                 hostName = settings.domain;
                 listenAddresses = [ publicIPv4 ];
                 useACMEHost = certName;
-                logFile = "/var/log/caddy/livesync-couchdb-access.log";
+                logFile = "/var/log/caddy/obsidian-access.log";
                 extraConfig = liveSyncCaddyRoute;
               };
               acme.certificateClaims.${certName} = {

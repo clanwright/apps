@@ -22,12 +22,10 @@
     in
     {
       clan.modules = {
-        "@clanwright/apps-livesync-couchdb" =
-          lib.modules.importApply ./clanServices/livesync-couchdb/default.nix
-            {
-              inherit lib;
-              couchdbModule = primitives.nixosModules.couchdb;
-            };
+        "@clanwright/apps-obsidian" = lib.modules.importApply ./clanServices/obsidian/default.nix {
+          inherit lib;
+          couchdbModule = primitives.nixosModules.couchdb;
+        };
         "@clanwright/apps-vaultwarden" = lib.modules.importApply ./clanServices/vaultwarden/default.nix {
           inherit lib;
           postgresqlModule = primitives.nixosModules.postgresql;

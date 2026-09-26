@@ -50,7 +50,7 @@ let
       };
       adminConfigSecretName = mkOption {
         type = types.str;
-        default = "livesync-couchdb-admin-ini";
+        default = "obsidian-admin-ini";
         description = "Existing SOPS administrator INI secret name.";
       };
       lifecycle = mkOption {
@@ -192,7 +192,7 @@ let
         "${machine}--network-firewall" = networkInstance "network-firewall" "host" machine null;
       })
       (mkIf (obsidian != null) {
-        "${machine}--app-livesync-couchdb" = appInstance "livesync-couchdb" "server" machine {
+        "${machine}--app-obsidian" = appInstance "obsidian" "server" machine {
           inherit (obsidian) domain adminConfigSecretName lifecycle;
           acme.certName = if obsidianActive then certName obsidian.domain else null;
           ingress.publicIPv4 = if obsidianActive then publicIPv4 else null;

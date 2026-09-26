@@ -50,7 +50,7 @@ let
     ];
   };
   config = clan.config.nixosConfigurations.fixture.config;
-  obsidianRoute = config.services.caddy.virtualHosts."fixture--app-livesync-couchdb".extraConfig;
+  obsidianRoute = config.services.caddy.virtualHosts."fixture--app-obsidian".extraConfig;
   vaultwardenRoute =
     lib.replaceStrings [ context.privateIngress.destinationIPv4 ] [ privateIP ]
       config.services.caddy.virtualHosts."fixture--app-vaultwarden".extraConfig;
