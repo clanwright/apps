@@ -32,3 +32,17 @@ The lock pins Clan `3b5832a13fb0ad1e57c2dafd246ca8ab60ad1b20`, Primitives `6979f
 ## Limits and verification
 
 The module declares host state only. It does not activate machines, change providers or DNS, create secret values, or perform backup operations. Standalone checks evaluate isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. The HTTP fixture runs a local Caddy/backend simulation; it does not prove production DNS, certificates, firewall packet behavior, or live application traffic. Consumer adoption and deployment require their own acceptance checks.
+
+### Release acceptance
+
+Release acceptance requires both standalone checks and fresh nested-consumer locking against the same published revision. With Nix, Bash, and Python 3 available, run from this checkout:
+
+```sh
+mkdir -p state
+nix flake check --all-systems --no-update-lock-file github:clanwright/apps/v0.1.0 > state/release-standalone.log 2>&1
+bash checks/consumer-lock.sh github:clanwright/apps/v0.1.0
+```
+
+Replace the reference in both commands with the exact candidate revision being accepted. Standalone builds need an `x86_64-linux` builder. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
+
+On Nix `2.34.7+1` and the official stable `2.35.2`, Apps `v0.1.0` fails the fresh consumer gate while resolving `apps/network/data-mesher`: Nix looks for its relative path in the Apps source tree. Existing valid consumer locks are a different acceptance case. See [the diagnosis and upstream handoff](docs/nested-consumer-locking.md); do not repair this by copying Network stubs or adding consumer overrides.
