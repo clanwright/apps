@@ -38,11 +38,37 @@ Adopting these dependencies is a breaking upgrade for existing consumers:
 - Primitives v0.2.0 selects PostgreSQL 18 instead of 17. Before activating an existing Vaultwarden installation, plan and test a major-version migration with `pg_upgrade` or a logical dump/restore. Preserve the old pinned configuration and compatible recovery tooling until the migrated application and historical backups are accepted. Do not start PostgreSQL 18 against a PostgreSQL 17 data directory. Updating Apps does not perform this migration. See the [Primitives migration contract](https://github.com/clanwright/primitives/blob/v0.2.0/README.md#postgresql-major-version-migration).
 - Network v3.0.0 selects Lego 5. The consuming host's native NixOS ACME module must support Lego 5 commands and Lego 4 account migration; changing only the Network or Apps pin is insufficient. Network verifies compatibility for every certificate on the host, including native certificates outside Apps. Network's verified nixpkgs baseline is `8d5d270900d3fc75655ea2d9d248b234f6631439`. See the [Network adoption contract](https://github.com/clanwright/network/blob/v3.0.0/docs/operations/release.md#consumer-adoption).
 
-Service names, routes, state declarations and secret names are unchanged by this dependency refresh. Primitives' optional recovery module is not enabled by these recipes.
+Service names, routes, state declarations and secret names are unchanged by this dependency refresh.
+
+## Application recovery
+
+Enabled recipes publish `clanwright.recovery.units.vaultwarden` and
+`clanwright.recovery.units.livesync` through the
+[Primitives v0.2.0 recovery contract](https://github.com/clanwright/primitives/blob/v0.2.0/docs/recovery.md).
+The `livesync` recovery ID is stable even though the recipe and native state are
+named `obsidian`. Both units use `contractVersion = 1`. Vaultwarden groups native
+`vaultwarden-app` and `<database-name>-db` state; LiveSync refers to `obsidian`.
+Native Clan state remains the only folder registry.
+
+An executor selects these IDs and invokes the declared commands; consumers do
+not repeat application paths, database commands or semantic checks. Declaring
+the units does not enable transmission, schedules, destinations or retention.
+Apps has no dependency on Reliability or a backup provider.
+
+`disabled-retained` withdraws recovery units and runtime/network claims while
+preserving state and secret metadata. A `null` selection withdraws declarations.
+Neither transition deletes local data or historical backups. Executors must
+reject a selected missing unit. Before changing a pin or disabling/removing an
+app, retain its pinned configuration and validator closures in a separate
+recovery environment; the current host configuration is not an archive of old
+handlers. Keep the matching database and application versions with those
+closures. Restoring old data is not a reason to re-enable production services.
+
+The command and artifact compatibility details are in [Recovery](docs/recovery.md).
 
 ## Limits and verification
 
-The module declares host state only. It does not activate machines, change providers or DNS, create secret values, or perform backup operations. Standalone checks evaluate isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. The Vaultwarden contract checks its PostgreSQL database declaration, local socket URL, backend selection, and systemd ordering and required dependency. Primitives owns database service readiness mechanics; these checks do not start Vaultwarden or prove a database connection. The HTTP fixture runs a local Caddy/backend simulation without a real database; it does not prove production DNS, certificates, firewall packet behavior, or live application traffic. Consumer adoption and deployment require their own acceptance checks.
+The module declares host state and recovery commands. It does not activate machines, change providers or DNS, create secret values, or initiate backup operations. The standalone contract check evaluates isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. It checks Vaultwarden's PostgreSQL declaration, local socket URL, backend selection, systemd dependencies and recovery-unit declarations. Primitives owns database service readiness mechanics; evaluation does not start Vaultwarden or prove its database connection. The HTTP fixture runs a local Caddy/backend simulation without a real database. The recovery runtime fixture exercises disposable database capture/import and semantic checks, failure cleanup and validation isolation. These checks do not prove production DNS, certificates, firewall packet behavior, live application traffic, or the consuming executor's privileged handoff. Consumer adoption and deployment require their own acceptance checks.
 
 ### Release acceptance
 
@@ -54,6 +80,6 @@ nix flake check --all-systems --no-update-lock-file github:clanwright/apps/v0.1.
 bash checks/consumer-lock.sh github:clanwright/apps/v0.1.0
 ```
 
-Replace the reference in both commands with the exact candidate revision being accepted. Standalone builds need an `x86_64-linux` builder. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
+Replace the reference in both commands with the exact candidate revision being accepted. Composition and HTTP builds need an `x86_64-linux` builder. Recovery runtime checks are available for native `x86_64-linux` and `aarch64-linux` builders; see the [runtime acceptance boundary](docs/recovery.md#acceptance-boundary), including the current x86-emulation limitation. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
 
 On Nix `2.34.7+1` and the official stable `2.35.2`, Apps `v0.1.0` fails the fresh consumer gate while resolving `apps/network/data-mesher`: Nix looks for its relative path in the Apps source tree. Existing valid consumer locks are a different acceptance case. See [the diagnosis and upstream handoff](docs/nested-consumer-locking.md); do not repair this by copying Network stubs or adding consumer overrides.

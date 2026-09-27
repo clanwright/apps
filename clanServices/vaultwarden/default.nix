@@ -2,6 +2,8 @@
   appsPkgsFor ? (_system: throw "vaultwarden requires an explicit appsPkgsFor dependency"),
   lib,
   postgresqlModule,
+  recoveryModule,
+  recoveryToolsFor,
   ...
 }:
 {
@@ -119,6 +121,7 @@
               else
                 builtins.currentSystem;
             appsPkgs = appsPkgsFor system;
+            recoveryTools = recoveryToolsFor system;
             vaultwardenHost = "127.0.0.1";
             vaultwardenPort = 8222;
             vaultwardenBackend = "${vaultwardenHost}:${toString vaultwardenPort}";
@@ -197,7 +200,10 @@
           in
           lib.recursiveUpdate
             {
-              imports = [ postgresqlModule ];
+              imports = [
+                postgresqlModule
+                recoveryModule
+              ];
 
               sops.secrets."${settings.adminTokenSecretName}" = {
                 owner = "root";
@@ -217,6 +223,16 @@
             }
             (
               lib.optionalAttrs active {
+                clanwright.recovery.units.vaultwarden = import ../../recovery/vaultwarden.nix {
+                  inherit
+                    lib
+                    pkgs
+                    config
+                    settings
+                    appsPkgs
+                    ;
+                  tools = recoveryTools;
+                };
                 networkCore = {
                   caddy.fragments.${instanceName} = {
                     hostName = settings.domain;

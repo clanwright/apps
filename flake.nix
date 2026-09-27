@@ -19,16 +19,25 @@
     }:
     let
       lib = clan-core.inputs.nixpkgs.lib;
+      recoveryModule = {
+        key = "${primitives.outPath}#nixosModules.recovery";
+        imports = [ primitives.nixosModules.recovery ];
+      };
     in
     {
       clan.modules = {
         "@clanwright/apps-obsidian" = lib.modules.importApply ./clanServices/obsidian/default.nix {
           inherit lib;
           couchdbModule = primitives.nixosModules.couchdb;
+          inherit recoveryModule;
+          recoveryToolsFor = system: primitives.lib.mkRecoveryTools { inherit system; };
+          appsPkgsFor = system: import apps-nixpkgs { inherit system; };
         };
         "@clanwright/apps-vaultwarden" = lib.modules.importApply ./clanServices/vaultwarden/default.nix {
           inherit lib;
           postgresqlModule = primitives.nixosModules.postgresql;
+          inherit recoveryModule;
+          recoveryToolsFor = system: primitives.lib.mkRecoveryTools { inherit system; };
           appsPkgsFor = system: import apps-nixpkgs { inherit system; };
         };
       };
@@ -45,6 +54,23 @@
       };
       checks.x86_64-linux.http-runtime = import ./checks/http-runtime.nix {
         inherit self clan-core network;
+      };
+      checks.x86_64-linux.recovery-runtime = import ./checks/recovery-runtime.nix {
+        inherit
+          self
+          clan-core
+          primitives
+          apps-nixpkgs
+          ;
+      };
+      checks.aarch64-linux.recovery-runtime = import ./checks/recovery-runtime.nix {
+        inherit
+          self
+          clan-core
+          primitives
+          apps-nixpkgs
+          ;
+        system = "aarch64-linux";
       };
     };
 }

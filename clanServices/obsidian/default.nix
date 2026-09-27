@@ -1,4 +1,11 @@
-{ couchdbModule, lib, ... }:
+{
+  appsPkgsFor,
+  couchdbModule,
+  lib,
+  recoveryModule,
+  recoveryToolsFor,
+  ...
+}:
 {
   _class = "clan.service";
   manifest = {
@@ -55,8 +62,11 @@
       }:
       {
         nixosModule =
-          _:
+          { config, pkgs, ... }:
           let
+            system = pkgs.stdenv.hostPlatform.system;
+            appsPkgs = appsPkgsFor system;
+            recoveryTools = recoveryToolsFor system;
             active = settings.lifecycle == "enabled";
             publicIPv4 =
               if settings.ingress.publicIPv4 == null then
@@ -79,7 +89,10 @@
             '';
           in
           {
-            imports = [ couchdbModule ];
+            imports = [
+              couchdbModule
+              recoveryModule
+            ];
 
             services.clanwright.primitives.couchdb = {
               enable = true;
@@ -105,6 +118,16 @@
             };
           }
           // lib.optionalAttrs active {
+            clanwright.recovery.units.livesync = import ../../recovery/livesync.nix {
+              inherit
+                lib
+                pkgs
+                config
+                settings
+                appsPkgs
+                ;
+              tools = recoveryTools;
+            };
             networkCore = {
               caddy.fragments.${instanceName} = {
                 hostName = settings.domain;

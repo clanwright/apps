@@ -59,6 +59,12 @@ let
       config = clan.config.nixosConfigurations.fixture.config;
     };
   empty = evaluate { } { } [ ];
+  withdrawn = evaluate {
+    fixture = {
+      obsidian = null;
+      vaultwarden = null;
+    };
+  } { } [ ];
   onlyObsidian = evaluate {
     fixture = {
       installation = context // {
@@ -295,9 +301,55 @@ let
     );
   instances = value: builtins.attrNames value.clan.config.inventory.instances;
   failed = value: map (a: a.message) (builtins.filter (a: !a.assertion) value.config.assertions);
+  recoveryUnits = value: value.config.clanwright.recovery.units or { };
+  recoverySummary =
+    value:
+    lib.mapAttrs (_: unit: {
+      inherit (unit)
+        contractVersion
+        formatVersion
+        stateRefs
+        captureCommand
+        validateCommand
+        ;
+    }) (recoveryUnits value);
+  backupTimers =
+    value: lib.filter (lib.hasInfix "backup") (builtins.attrNames value.config.systemd.timers);
+  backupServices =
+    value: lib.filter (lib.hasInfix "backup") (builtins.attrNames value.config.systemd.services);
+  unexpectedRecoveryRuntime =
+    value:
+    let
+      names =
+        builtins.attrNames value.config.systemd.services ++ builtins.attrNames value.config.systemd.timers;
+    in
+    lib.filter (
+      name:
+      lib.any (marker: lib.hasInfix marker name) [
+        "recovery"
+        "restic"
+        "borg"
+        "rclone"
+      ]
+    ) names;
+  validRecoveryUnit =
+    unit:
+    unit.contractVersion == 1
+    && builtins.match "[A-Za-z0-9]+([._-][A-Za-z0-9]+)*" unit.formatVersion != null
+    && builtins.match "/nix/store/[a-z0-9]{32}-[^/]+/bin/[^/]+" unit.captureCommand != null
+    && builtins.match "/nix/store/[a-z0-9]{32}-[^/]+/bin/[^/]+" unit.validateCommand != null;
   report = {
     none = {
       instances = instances empty;
+      recovery = recoverySummary empty;
+    };
+    withdrawn = {
+      instances = instances withdrawn;
+      recovery = recoverySummary withdrawn;
+      state = builtins.attrNames withdrawn.config.clan.core.state;
+      secrets = builtins.attrNames withdrawn.config.sops.secrets;
+      caddyHosts = builtins.attrNames withdrawn.config.services.caddy.virtualHosts;
+      claims = withdrawn.config.networkCore.firewall.privateIngressClaims or { };
     };
     obsidian = {
       instances = instances onlyObsidian;
@@ -307,6 +359,9 @@ let
       caddyHosts = builtins.attrNames onlyObsidian.config.services.caddy.virtualHosts;
       claims = onlyObsidian.config.networkCore.firewall.privateIngressClaims or { };
       failedAssertions = failed onlyObsidian;
+      recovery = recoverySummary onlyObsidian;
+      backupTimers = backupTimers onlyObsidian;
+      backupServices = backupServices onlyObsidian;
     };
     vaultwarden = {
       instances = instances onlyVaultwarden;
@@ -315,12 +370,19 @@ let
       caddyHosts = builtins.attrNames onlyVaultwarden.config.services.caddy.virtualHosts;
       claims = onlyVaultwarden.config.networkCore.firewall.privateIngressClaims or { };
       failedAssertions = failed onlyVaultwarden;
+      recovery = recoverySummary onlyVaultwarden;
+      backupTimers = backupTimers onlyVaultwarden;
+      backupServices = backupServices onlyVaultwarden;
     };
     both = {
       instances = instances both;
       caddyHosts = builtins.attrNames both.config.services.caddy.virtualHosts;
       claims = both.config.networkCore.firewall.privateIngressClaims or { };
       failedAssertions = failed both;
+      recovery = recoverySummary both;
+      backupTimers = backupTimers both;
+      backupServices = backupServices both;
+      unexpectedRecoveryRuntime = unexpectedRecoveryRuntime both;
     };
     retained = {
       instances = instances retained;
@@ -338,6 +400,7 @@ let
       caddyHosts = builtins.attrNames retained.config.services.caddy.virtualHosts;
       claims = retained.config.networkCore.firewall.privateIngressClaims or { };
       failedAssertions = failed retained;
+      recovery = recoverySummary retained;
     };
     mixed = {
       instances = instances mixed;
@@ -345,6 +408,7 @@ let
       postgresql = mixed.config.services.postgresql.enable;
       caddyHosts = builtins.attrNames mixed.config.services.caddy.virtualHosts;
       failedAssertions = failed mixed;
+      recovery = recoverySummary mixed;
     };
     conflicts = {
       trust = failed conflictingTrust;
@@ -352,6 +416,7 @@ let
     };
     existingNetwork = {
       instances = instances existingNetwork;
+      recovery = recoverySummary existingNetwork;
       certSettings =
         existingNetwork.clan.config.inventory.instances."fixture--network-certificates".roles.server.machines.fixture.settings;
       acmeEmail = existingNetwork.config.security.acme.defaults.email or null;
@@ -434,6 +499,12 @@ let
   };
   check =
     assert report.none.instances == [ ];
+    assert report.none.recovery == { };
+    assert report.withdrawn.instances == [ ];
+    assert report.withdrawn.recovery == { };
+    assert report.withdrawn.state == [ ];
+    assert report.withdrawn.secrets == [ ];
+    assert report.withdrawn.caddyHosts == [ ] && report.withdrawn.claims == { };
     assert builtins.length report.obsidian.instances == 4;
     assert builtins.elem "fixture--app-obsidian" report.obsidian.instances;
     assert report.obsidian.serviceName == "@clanwright/apps-obsidian";
@@ -460,6 +531,7 @@ let
     assert report.retained.vaultwardenSecretRestartUnits == [ ];
     assert report.retained.vaultwardenDatabaseLifecycle == "disabled-retained";
     assert report.retained.caddyHosts == [ ] && report.retained.claims == { };
+    assert report.retained.recovery == { };
     assert report.obsidian.failedAssertions == [ ];
     assert report.vaultwarden.failedAssertions == [ ];
     assert report.both.failedAssertions == [ ];
@@ -468,9 +540,35 @@ let
     assert !report.mixed.couchdb && report.mixed.postgresql;
     assert report.mixed.caddyHosts == [ "fixture--app-vaultwarden" ];
     assert report.mixed.failedAssertions == [ ];
+    assert builtins.attrNames report.mixed.recovery == [ "vaultwarden" ];
+    assert builtins.attrNames report.obsidian.recovery == [ "livesync" ];
+    assert builtins.attrNames report.vaultwarden.recovery == [ "vaultwarden" ];
+    assert
+      builtins.attrNames report.both.recovery == [
+        "livesync"
+        "vaultwarden"
+      ];
+    assert builtins.all validRecoveryUnit (builtins.attrValues report.both.recovery);
+    assert report.both.recovery.livesync.stateRefs == [ "obsidian" ];
+    assert
+      report.both.recovery.vaultwarden.stateRefs == [
+        "vaultwarden-app"
+        "vaultwarden-db"
+      ];
+    assert builtins.all (stateRef: builtins.hasAttr stateRef both.config.clan.core.state) (
+      report.both.recovery.livesync.stateRefs ++ report.both.recovery.vaultwarden.stateRefs
+    );
+    assert report.obsidian.recovery == { livesync = report.both.recovery.livesync; };
+    assert report.vaultwarden.recovery == { vaultwarden = report.both.recovery.vaultwarden; };
+    assert report.mixed.recovery == report.vaultwarden.recovery;
+    assert builtins.all (lib.hasPrefix "postgresql") (
+      report.both.backupTimers ++ report.both.backupServices
+    );
+    assert report.both.unexpectedRecoveryRuntime == [ ];
     assert builtins.any (lib.hasInfix "100.64.0.10") report.conflicts.trust;
     assert !report.conflicts.sameDomain;
     assert report.existingNetwork.instances == report.both.instances;
+    assert report.existingNetwork.recovery == report.both.recovery;
     assert report.existingNetwork.firewallSettingsPreserved;
     assert report.existingNetwork.failedAssertions == [ ];
     assert builtins.length report.coreOnly.instances == 3;
@@ -516,6 +614,10 @@ let
 in
 pkgs.runCommand "clanwright-apps-contract" { } ''
   test ${if check then "true" else "false"}
+  ${lib.concatMapStringsSep "\n" (unit: ''
+    test -x ${lib.escapeShellArg unit.captureCommand}
+    test -x ${lib.escapeShellArg unit.validateCommand}
+  '') (builtins.attrValues report.both.recovery)}
   cat > $out <<'REPORT'
   ${builtins.toJSON report}
   REPORT

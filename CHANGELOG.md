@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Publish application-owned `vaultwarden` and `livesync` recovery units through Primitives v0.2.0's public contract, without enabling a backup executor or provider.
+- Capture Vaultwarden's native PostgreSQL export and application files together; capture LiveSync through the public CouchDB helper while writes are paused. Preserve prior service activity and reject incomplete captures.
+- Add isolated database import and semantic validation for attachment/file and document/chunk relationships, with explicit stored formats and historical-handler retention guidance.
+- Extend standalone lifecycle/composition checks and add disposable recovery runtime checks, including failure cleanup and validator isolation.
+
 - Update Clan to `c612dac4b2bfb5278b7c366f250044ddb5401bcb`, Apps nixpkgs to `8d5d270900d3fc75655ea2d9d248b234f6631439`, Network to v3.0.0, and Primitives to v0.2.0. Vaultwarden advances to 1.37.3.
 - Breaking: adopt CouchDB 3.5.2 and PostgreSQL 18.6 from Primitives. Existing PostgreSQL 17 consumers must separately plan and test a major-version migration before activation.
 - Breaking: Network now supplies Lego 5 and requires a compatible native NixOS ACME module with v4 account migration support.
