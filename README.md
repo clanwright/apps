@@ -33,7 +33,7 @@ The lock pins Clan `3b5832a13fb0ad1e57c2dafd246ca8ab60ad1b20`, Primitives `6979f
 
 ## Limits and verification
 
-The module declares host state only. It does not activate machines, change providers or DNS, create secret values, or perform backup operations. Standalone checks evaluate isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. The HTTP fixture runs a local Caddy/backend simulation; it does not prove production DNS, certificates, firewall packet behavior, or live application traffic. Consumer adoption and deployment require their own acceptance checks.
+The module declares host state only. It does not activate machines, change providers or DNS, create secret values, or perform backup operations. Standalone checks evaluate isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. The Vaultwarden contract checks its PostgreSQL database declaration, local socket URL, backend selection, and systemd ordering and required dependency. Primitives owns database service readiness mechanics; these checks do not start Vaultwarden or prove a database connection. The HTTP fixture runs a local Caddy/backend simulation without a real database; it does not prove production DNS, certificates, firewall packet behavior, or live application traffic. Consumer adoption and deployment require their own acceptance checks.
 
 ### Release acceptance
 

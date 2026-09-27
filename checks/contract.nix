@@ -326,12 +326,15 @@ let
       instances = instances retained;
       couchdb = retained.config.services.couchdb.enable;
       postgresql = retained.config.services.postgresql.enable;
+      vaultwarden = retained.config.services.vaultwarden.enable;
       couchdbState = retained.config.clan.core.state.obsidian.folders;
       vaultwardenState = retained.config.clan.core.state.vaultwarden-app.folders;
       vaultwardenDbState = retained.config.clan.core.state.vaultwarden-db.folders;
       obsidianSecret = builtins.hasAttr "obsidian-admin-ini" retained.config.sops.secrets;
       vaultwardenSecret = builtins.hasAttr "vaultwarden-admin-token" retained.config.sops.secrets;
       vaultwardenSecretRestartUnits = retained.config.sops.secrets."vaultwarden-admin-token".restartUnits;
+      vaultwardenDatabaseLifecycle =
+        retained.config.services.clanwright.primitives.postgresql.databases.vaultwarden.lifecycle;
       caddyHosts = builtins.attrNames retained.config.services.caddy.virtualHosts;
       claims = retained.config.networkCore.firewall.privateIngressClaims or { };
       failedAssertions = failed retained;
@@ -404,6 +407,16 @@ let
       vaultwardenRestoreOrder =
         onlyVaultwarden.config.clan.core.postgresql.databases.vaultwarden.restore.stopOnRestore;
       vaultwardenUnitAfter = onlyVaultwarden.config.systemd.services.vaultwarden.after;
+      vaultwardenUnitRequires = onlyVaultwarden.config.systemd.services.vaultwarden.requires;
+      vaultwardenDbBackend = onlyVaultwarden.config.services.vaultwarden.dbBackend;
+      vaultwardenDatabaseUrl = onlyVaultwarden.config.services.vaultwarden.config.DATABASE_URL;
+      vaultwardenDatabase =
+        let
+          database = onlyVaultwarden.config.services.clanwright.primitives.postgresql.databases.vaultwarden;
+        in
+        {
+          inherit (database) lifecycle user restoreStopUnits;
+        };
       vaultwardenPublicAdmin404 =
         lib.hasInfix "respond @publicAdminPaths 404"
           onlyVaultwarden.config.services.caddy.virtualHosts."fixture--app-vaultwarden".extraConfig;
@@ -439,12 +452,14 @@ let
       ];
     assert report.obsidian.couchdb && !report.obsidian.postgresql;
     assert !report.vaultwarden.couchdb && report.vaultwarden.postgresql;
-    assert !report.retained.couchdb && !report.retained.postgresql;
+    assert !report.retained.couchdb && !report.retained.postgresql && !report.retained.vaultwarden;
     assert report.retained.couchdbState == [ "/var/lib/couchdb" ];
     assert report.retained.vaultwardenState == [ "/var/lib/vaultwarden" ];
     assert report.retained.vaultwardenDbState == [ "/var/backup/postgres/vaultwarden" ];
     assert report.retained.obsidianSecret && report.retained.vaultwardenSecret;
     assert report.retained.vaultwardenSecretRestartUnits == [ ];
+    assert report.retained.vaultwardenDatabaseLifecycle == "disabled-retained";
+    assert report.retained.caddyHosts == [ ] && report.retained.claims == { };
     assert report.obsidian.failedAssertions == [ ];
     assert report.vaultwarden.failedAssertions == [ ];
     assert report.both.failedAssertions == [ ];
@@ -489,6 +504,12 @@ let
     assert report.defaults.vaultwardenDbState == [ "/var/backup/postgres/vaultwarden" ];
     assert builtins.elem "vaultwarden.service" report.defaults.vaultwardenRestoreOrder;
     assert builtins.elem "postgresql.service" report.defaults.vaultwardenUnitAfter;
+    assert builtins.elem "postgresql.service" report.defaults.vaultwardenUnitRequires;
+    assert report.defaults.vaultwardenDbBackend == "postgresql";
+    assert report.defaults.vaultwardenDatabaseUrl == "postgresql:///vaultwarden?host=/run/postgresql";
+    assert report.defaults.vaultwardenDatabase.lifecycle == "enabled";
+    assert report.defaults.vaultwardenDatabase.user == "vaultwarden";
+    assert report.defaults.vaultwardenDatabase.restoreStopUnits == [ "vaultwarden.service" ];
     assert report.defaults.vaultwardenPublicAdmin404 && report.defaults.vaultwardenPrivateGuard;
     assert report.defaults.caddyPackageMatchesNetwork;
     true;
