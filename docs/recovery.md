@@ -165,7 +165,7 @@ mkdir -p state
 nix build --no-link --print-out-paths \
   .#checks.x86_64-linux.contract \
   .#checks.x86_64-linux.http-runtime \
-  .#checks.x86_64-linux.recovery-runtime \
+  .#checks.aarch64-linux.recovery-runtime \
   > state/recovery-checks.log 2>&1
 ```
 
@@ -180,8 +180,10 @@ matches the builder's native architecture.
 On the current ARM-hosted builder, x86 Erlang's default JIT mapping fails before
 CouchDB can start (`prim_tty`/`nouser`). A test-source-only single-mapping JIT probe
 starts, but the public isolated helper clears that test flag. Native ARM runtime
-evidence must not be described as native x86 runtime acceptance. A release
-targeting x86 still needs the runtime check on a native x86 builder. The test
+evidence must not be described as native x86 runtime acceptance. The release
+gate uses the complete recovery suite on a native supported Linux builder;
+native x86 runtime is an additional check, not a mandatory release gate.
+Emulated x86 execution is not a release gate. The test
 source CouchDB uses a store CA bundle through Erlang configuration; this
 configuration is not inherited by the isolated validator.
 

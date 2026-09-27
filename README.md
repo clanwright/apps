@@ -76,10 +76,14 @@ Release acceptance requires both standalone checks and fresh nested-consumer loc
 
 ```sh
 mkdir -p state
-nix flake check --all-systems --no-update-lock-file github:clanwright/apps/v0.1.0 > state/release-standalone.log 2>&1
-bash checks/consumer-lock.sh github:clanwright/apps/v0.1.0
+nix build --no-link \
+  github:clanwright/apps/REVISION#checks.x86_64-linux.contract \
+  github:clanwright/apps/REVISION#checks.x86_64-linux.http-runtime \
+  github:clanwright/apps/REVISION#checks.aarch64-linux.recovery-runtime \
+  > state/release-standalone.log 2>&1
+bash checks/consumer-lock.sh github:clanwright/apps/REVISION
 ```
 
-Replace the reference in both commands with the exact candidate revision being accepted. Composition and HTTP builds need an `x86_64-linux` builder. Recovery runtime checks are available for native `x86_64-linux` and `aarch64-linux` builders; see the [runtime acceptance boundary](docs/recovery.md#acceptance-boundary), including the current x86-emulation limitation. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
+Replace the reference in both commands with the exact candidate revision being accepted. Composition and HTTP builds need an `x86_64-linux` builder. Run the complete recovery suite on a native supported Linux builder: the example uses ARM; substitute `checks.x86_64-linux.recovery-runtime` when using native x86. The x86-emulated runtime check is not a release gate. See the [runtime acceptance boundary](docs/recovery.md#acceptance-boundary), including the current x86-emulation limitation. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
 
 On Nix `2.34.7+1` and the official stable `2.35.2`, Apps `v0.1.0` fails the fresh consumer gate while resolving `apps/network/data-mesher`: Nix looks for its relative path in the Apps source tree. Existing valid consumer locks are a different acceptance case. See [the diagnosis and upstream handoff](docs/nested-consumer-locking.md); do not repair this by copying Network stubs or adding consumer overrides.
