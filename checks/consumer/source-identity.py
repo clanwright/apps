@@ -6,8 +6,8 @@ import pathlib
 import sys
 
 
-NETWORK_REV = "7cbc2a01e9e18299b2ac606714081cc57470778d"
-PRIMITIVES_REV = "6979fee86075ae62492e1572be434caf84c8337b"
+NETWORK_REV = "bfba5e74c3ee09ab92534fc2e7fdf31dc4525bb2"
+PRIMITIVES_REV = "9dd13dd84479914fe8465ff6f77d2bb1f8034e2e"
 
 
 def require(condition, message):

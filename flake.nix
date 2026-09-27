@@ -2,10 +2,10 @@
   description = "Clanwright application recipes for Obsidian LiveSync and Vaultwarden";
 
   inputs = {
-    clan-core.url = "github:clan-lol/clan-core/3b5832a13fb0ad1e57c2dafd246ca8ab60ad1b20";
-    network.url = "github:clanwright/network/v2.2.0";
-    primitives.url = "github:clanwright/primitives/v0.1.0";
-    apps-nixpkgs.url = "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410";
+    clan-core.url = "github:clan-lol/clan-core/c612dac4b2bfb5278b7c366f250044ddb5401bcb";
+    network.url = "github:clanwright/network/bfba5e74c3ee09ab92534fc2e7fdf31dc4525bb2"; # v3.0.0
+    primitives.url = "github:clanwright/primitives/9dd13dd84479914fe8465ff6f77d2bb1f8034e2e"; # v0.2.0
+    apps-nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
   };
 
   outputs =

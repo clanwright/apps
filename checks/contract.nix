@@ -494,9 +494,9 @@ let
         privateIPv6 = false;
       };
     assert report.defaults.obsidianSecret && report.defaults.vaultwardenSecret;
-    assert report.defaults.couchdbVersion == "3.5.1";
-    assert report.defaults.postgresVersion == "17.10";
-    assert report.defaults.vaultwardenVersion == "1.37.2";
+    assert report.defaults.couchdbVersion == "3.5.2";
+    assert report.defaults.postgresVersion == "18.6";
+    assert report.defaults.vaultwardenVersion == "1.37.3";
     assert report.defaults.vaultwardenPackageMatchesExport;
     assert report.defaults.couchdbState == [ "/var/lib/couchdb" ];
     assert report.defaults.obsidianAccessLog == "/var/log/caddy/obsidian-access.log";

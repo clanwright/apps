@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Update Clan to `c612dac4b2bfb5278b7c366f250044ddb5401bcb`, Apps nixpkgs to `8d5d270900d3fc75655ea2d9d248b234f6631439`, Network to v3.0.0, and Primitives to v0.2.0. Vaultwarden advances to 1.37.3.
+- Breaking: adopt CouchDB 3.5.2 and PostgreSQL 18.6 from Primitives. Existing PostgreSQL 17 consumers must separately plan and test a major-version migration before activation.
+- Breaking: Network now supplies Lego 5 and requires a compatible native NixOS ACME module with v4 account migration support.
+- Preserve released external dependency locks; state declarations, secret metadata, service identities, and routes are unchanged.
+- Reconfirm the existing fresh nested-consumer locking failure on Nix 2.35.2 for the dependency refresh; Apps #1 remains unresolved.
+
 ## v0.2.1 — 2026-09-27
 
 - Cover Vaultwarden's required PostgreSQL dependency, database backend and local socket URL, public database declaration, and retained lifecycle withdrawal in the standalone contract.
