@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.2.1 — 2026-09-27
+
+- Cover Vaultwarden's required PostgreSQL dependency, database backend and local socket URL, public database declaration, and retained lifecycle withdrawal in the standalone contract.
+- Clarify that Apps checks recipe composition while Primitives owns database readiness mechanics; the HTTP fixture does not run a real database.
+- Keep recipes and dependency pins unchanged. The known fresh nested-consumer locking limitation in Apps #1 remains.
+
 ## v0.2.0 — 2026-09-26
 
 - Breaking: rename the Obsidian service to `@clanwright/apps-obsidian`, its instance to `<machine>--app-obsidian`, its CouchDB state declaration to `obsidian`, its default admin INI secret to `obsidian-admin-ini`, and its Caddy access log to `obsidian-access.log`. Consumers must update direct references and prepare the new secret binding before adoption; see the README migration note.
