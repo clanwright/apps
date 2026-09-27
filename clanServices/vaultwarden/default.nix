@@ -75,6 +75,11 @@
             default = "enabled";
             description = "Whether Vaultwarden runtime owners are active or retained for recovery.";
           };
+          export.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Provide a manually callable native Vaultwarden export.";
+          };
 
           database = {
             name = lib.mkOption {
@@ -126,6 +131,22 @@
             vaultwardenPort = 8222;
             vaultwardenBackend = "${vaultwardenHost}:${toString vaultwardenPort}";
             active = settings.lifecycle == "enabled";
+            exportEnabled = settings.export.enable;
+            recoveryUnit = import ../../recovery/vaultwarden.nix {
+              inherit
+                lib
+                pkgs
+                config
+                settings
+                appsPkgs
+                ;
+              tools = recoveryTools;
+            };
+            exportFactory = import ../../recovery/export.nix {
+              inherit lib pkgs;
+              id = "vaultwarden";
+              unit = recoveryUnit;
+            };
             publicIPv4 =
               if settings.ingress.publicIPv4 == null then
                 throw "Apps Vaultwarden: active installation requires publicIPv4"
@@ -212,7 +233,12 @@
                 restartUnits = lib.optional active "vaultwarden.service";
               };
 
-              clan.core.state.vaultwarden-app.folders = [ "/var/lib/vaultwarden" ];
+              clan.core.state = {
+                vaultwarden-app.folders = [ "/var/lib/vaultwarden" ];
+              }
+              // lib.optionalAttrs exportEnabled {
+                apps-export-vaultwarden.folders = [ "/var/lib/clanwright-app-exports/vaultwarden" ];
+              };
 
               services.clanwright.primitives.postgresql.databases."${settings.database.name}" = {
                 inherit (settings) lifecycle;
@@ -223,16 +249,7 @@
             }
             (
               lib.optionalAttrs active {
-                clanwright.recovery.units.vaultwarden = import ../../recovery/vaultwarden.nix {
-                  inherit
-                    lib
-                    pkgs
-                    config
-                    settings
-                    appsPkgs
-                    ;
-                  tools = recoveryTools;
-                };
+                clanwright.recovery.units.vaultwarden = recoveryUnit;
                 networkCore = {
                   caddy.fragments.${instanceName} = {
                     hostName = settings.domain;
@@ -310,6 +327,13 @@
                 systemd.services.vaultwarden = {
                   after = [ "postgresql.service" ];
                   requires = [ "postgresql.service" ];
+                };
+              }
+              // lib.optionalAttrs (active && exportEnabled) {
+                system.build.appsVaultwardenExport = exportFactory.package;
+                systemd.services.apps-export-vaultwarden = {
+                  description = "Capture a private Vaultwarden export";
+                  serviceConfig = exportFactory.serviceConfig;
                 };
               }
             );

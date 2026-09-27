@@ -72,5 +72,20 @@
           ;
         system = "aarch64-linux";
       };
+      checks.aarch64-linux.export-tools = import ./checks/export/check.nix {
+        pkgs = import apps-nixpkgs { system = "aarch64-linux"; };
+      };
+      checks.aarch64-linux.export-runtime = import ./checks/export-runtime.nix {
+        inherit
+          self
+          clan-core
+          network
+          apps-nixpkgs
+          ;
+        system = "aarch64-linux";
+      };
+      checks.aarch64-linux.validator-isolation = import ./checks/validate {
+        pkgs = import apps-nixpkgs { system = "aarch64-linux"; };
+      };
     };
 }

@@ -57,6 +57,11 @@ let
         type = lifecycleType;
         default = "enabled";
       };
+      export.enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Provide a manually callable native LiveSync export.";
+      };
     };
   };
   vaultwardenType = types.submodule {
@@ -73,6 +78,11 @@ let
       lifecycle = mkOption {
         type = lifecycleType;
         default = "enabled";
+      };
+      export.enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Provide a manually callable native Vaultwarden export.";
       };
       registration.open = mkOption {
         type = types.bool;
@@ -193,7 +203,12 @@ let
       })
       (mkIf (obsidian != null) {
         "${machine}--app-obsidian" = appInstance "obsidian" "server" machine {
-          inherit (obsidian) domain adminConfigSecretName lifecycle;
+          inherit (obsidian)
+            domain
+            adminConfigSecretName
+            lifecycle
+            export
+            ;
           acme.certName = if obsidianActive then certName obsidian.domain else null;
           ingress.publicIPv4 = if obsidianActive then publicIPv4 else null;
         };
@@ -204,6 +219,7 @@ let
             domain
             adminTokenSecretName
             lifecycle
+            export
             registration
             fail2ban
             logLevel

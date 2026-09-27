@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-09-27
+
+- Add opt-in native application export services and independent reader copies for native Restic jobs, with complete-only publication, capture-age admission and last-good retry semantics.
+- Ship isolated semantic restore-validation entry points with private restored-file handoff and separately retainable validator closures.
+- Preserve existing application capture formats and command contracts; consumer-owned destinations, credentials, schedules and retention remain outside Apps.
+- Use native systemd stages for capture, publication and cleanup, and the existing bubblewrap model for disposable validation. No Python runtime engine, generic backup executor or destination abstraction is introduced.
+- Add actual native-service, two-destination Restic and validator-isolation fixtures. Export settings default off and add no automatic timers or uploads.
+
 ## v0.3.1 — 2026-09-27
 
 - Adopt Network v3.0.1 (`efeaa948d58e678d27a5a812f0293a3ada71c681`) to fix ordinary fresh nested-consumer locking and dependency updates on released Nix versions.

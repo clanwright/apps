@@ -85,6 +85,28 @@ let
       inherit obsidian vaultwarden;
     };
   } { } [ ];
+  exported = evaluate {
+    fixture = {
+      installation = context;
+      obsidian = obsidian // {
+        export.enable = true;
+      };
+      vaultwarden = vaultwarden // {
+        export.enable = true;
+      };
+    };
+  } { } [ ];
+  withRestic = evaluate {
+    fixture = {
+      installation = context;
+      obsidian = obsidian // {
+        export.enable = true;
+      };
+      vaultwarden = vaultwarden // {
+        export.enable = true;
+      };
+    };
+  } { } [ ../examples/native-restic.nix ];
   retained = evaluate {
     fixture = {
       obsidian = obsidian // {
@@ -92,6 +114,18 @@ let
       };
       vaultwarden = vaultwarden // {
         lifecycle = "disabled-retained";
+      };
+    };
+  } { } [ ];
+  retainedExported = evaluate {
+    fixture = {
+      obsidian = obsidian // {
+        lifecycle = "disabled-retained";
+        export.enable = true;
+      };
+      vaultwarden = vaultwarden // {
+        lifecycle = "disabled-retained";
+        export.enable = true;
       };
     };
   } { } [ ];
@@ -317,6 +351,14 @@ let
     value: lib.filter (lib.hasInfix "backup") (builtins.attrNames value.config.systemd.timers);
   backupServices =
     value: lib.filter (lib.hasInfix "backup") (builtins.attrNames value.config.systemd.services);
+  exportServices =
+    value: lib.filter (lib.hasPrefix "apps-export-") (builtins.attrNames value.config.systemd.services);
+  exportTimers =
+    value: lib.filter (lib.hasPrefix "apps-export-") (builtins.attrNames value.config.systemd.timers);
+  exportBuilds =
+    value: lib.filter (lib.hasPrefix "apps") (builtins.attrNames value.config.system.build);
+  exportState =
+    value: lib.filter (lib.hasPrefix "apps-export-") (builtins.attrNames value.config.clan.core.state);
   unexpectedRecoveryRuntime =
     value:
     let
@@ -350,6 +392,8 @@ let
       secrets = builtins.attrNames withdrawn.config.sops.secrets;
       caddyHosts = builtins.attrNames withdrawn.config.services.caddy.virtualHosts;
       claims = withdrawn.config.networkCore.firewall.privateIngressClaims or { };
+      exportServices = exportServices withdrawn;
+      exportState = exportState withdrawn;
     };
     obsidian = {
       instances = instances onlyObsidian;
@@ -383,6 +427,78 @@ let
       backupTimers = backupTimers both;
       backupServices = backupServices both;
       unexpectedRecoveryRuntime = unexpectedRecoveryRuntime both;
+      exportServices = exportServices both;
+      exportTimers = exportTimers both;
+      exportState = exportState both;
+      exportBuilds = exportBuilds both;
+    };
+    exported = {
+      services = exportServices exported;
+      timers = exportTimers exported;
+      state = exportState exported;
+      builds = exportBuilds exported;
+      paths = {
+        livesync = exported.config.clan.core.state.apps-export-livesync.folders;
+        vaultwarden = exported.config.clan.core.state.apps-export-vaultwarden.folders;
+      };
+      units = lib.genAttrs [ "apps-export-livesync" "apps-export-vaultwarden" ] (
+        name:
+        let
+          unit = exported.config.systemd.services.${name};
+        in
+        {
+          inherit (unit) wantedBy;
+          inherit (unit.serviceConfig)
+            Type
+            User
+            Group
+            UMask
+            TimeoutStartSec
+            TimeoutStopSec
+            KillMode
+            StateDirectory
+            RuntimeDirectory
+            ExecStartPre
+            ExecStart
+            ExecStartPost
+            ExecStopPost
+            ;
+        }
+      );
+      packages = {
+        livesync = exported.config.system.build.appsLiveSyncExport.outPath;
+        vaultwarden = exported.config.system.build.appsVaultwardenExport.outPath;
+      };
+      recovery = recoverySummary exported;
+      caddyHosts = builtins.attrNames exported.config.services.caddy.virtualHosts;
+      claims = exported.config.networkCore.firewall.privateIngressClaims or { };
+      failedAssertions = failed exported;
+    };
+    withRestic = {
+      names = builtins.attrNames withRestic.config.services.restic.backups;
+      jobs = lib.mapAttrs (name: job: {
+        inherit (job) timerConfig createWrapper paths;
+        cacheDir = withRestic.config.systemd.services."restic-backups-${name}".environment.RESTIC_CACHE_DIR;
+        prepare = job.backupPrepareCommand;
+        cleanup = job.backupCleanupCommand;
+      }) withRestic.config.services.restic.backups;
+      timers = lib.filter (lib.hasPrefix "restic-backups-") (
+        builtins.attrNames withRestic.config.systemd.timers
+      );
+      services = lib.genAttrs (map (name: "restic-backups-${name}") (
+        builtins.attrNames withRestic.config.services.restic.backups
+      )) (name: withRestic.config.systemd.services.${name}.serviceConfig);
+      failedAssertions = failed withRestic;
+    };
+    retainedExported = {
+      services = exportServices retainedExported;
+      timers = exportTimers retainedExported;
+      state = exportState retainedExported;
+      builds = exportBuilds retainedExported;
+      recovery = recoverySummary retainedExported;
+      caddyHosts = builtins.attrNames retainedExported.config.services.caddy.virtualHosts;
+      claims = retainedExported.config.networkCore.firewall.privateIngressClaims or { };
+      failedAssertions = failed retainedExported;
     };
     retained = {
       instances = instances retained;
@@ -505,6 +621,7 @@ let
     assert report.withdrawn.state == [ ];
     assert report.withdrawn.secrets == [ ];
     assert report.withdrawn.caddyHosts == [ ] && report.withdrawn.claims == { };
+    assert report.withdrawn.exportServices == [ ] && report.withdrawn.exportState == [ ];
     assert builtins.length report.obsidian.instances == 4;
     assert builtins.elem "fixture--app-obsidian" report.obsidian.instances;
     assert report.obsidian.serviceName == "@clanwright/apps-obsidian";
@@ -565,6 +682,83 @@ let
       report.both.backupTimers ++ report.both.backupServices
     );
     assert report.both.unexpectedRecoveryRuntime == [ ];
+    assert report.both.exportServices == [ ] && report.both.exportTimers == [ ];
+    assert report.both.exportState == [ ] && report.both.exportBuilds == [ ];
+    assert
+      report.exported.services == [
+        "apps-export-livesync"
+        "apps-export-vaultwarden"
+      ];
+    assert report.exported.timers == [ ];
+    assert report.exported.state == report.exported.services;
+    assert
+      report.exported.builds == [
+        "appsLiveSyncExport"
+        "appsVaultwardenExport"
+      ];
+    assert report.exported.paths.livesync == [ "/var/lib/clanwright-app-exports/livesync" ];
+    assert report.exported.paths.vaultwarden == [ "/var/lib/clanwright-app-exports/vaultwarden" ];
+    assert builtins.all (
+      unit:
+      unit.wantedBy == [ ]
+      && unit.Type == "oneshot"
+      && unit.User == "root"
+      && unit.Group == "root"
+      && unit.UMask == "0077"
+      && unit.TimeoutStartSec == "1h"
+      && unit.KillMode == "mixed"
+    ) (builtins.attrValues report.exported.units);
+    assert report.exported.units.apps-export-livesync.TimeoutStopSec == "90s";
+    assert report.exported.units.apps-export-vaultwarden.TimeoutStopSec == "180s";
+    assert
+      report.exported.units.apps-export-livesync.ExecStart
+      == "${report.exported.recovery.livesync.captureCommand} /var/lib/clanwright-app-exports/livesync/pending";
+    assert
+      report.exported.units.apps-export-vaultwarden.ExecStart
+      == "${report.exported.recovery.vaultwarden.captureCommand} /var/lib/clanwright-app-exports/vaultwarden/pending";
+    assert builtins.all (
+      unit:
+      unit.StateDirectory != ""
+      && unit.RuntimeDirectory != ""
+      && unit.ExecStartPre != ""
+      && unit.ExecStartPost != ""
+      && unit.ExecStopPost != ""
+    ) (builtins.attrValues report.exported.units);
+    assert report.exported.recovery == report.both.recovery;
+    assert
+      report.exported.caddyHosts == report.both.caddyHosts
+      && report.exported.claims == report.both.claims;
+    assert report.exported.failedAssertions == [ ];
+    assert report.retainedExported.services == [ ] && report.retainedExported.timers == [ ];
+    assert report.retainedExported.state == report.exported.state;
+    assert report.retainedExported.builds == [ ] && report.retainedExported.recovery == { };
+    assert report.retainedExported.caddyHosts == [ ] && report.retainedExported.claims == { };
+    assert report.retainedExported.failedAssertions == [ ];
+    assert
+      report.withRestic.names == [
+        "livesync-a"
+        "livesync-b"
+        "vaultwarden-a"
+        "vaultwarden-b"
+      ];
+    assert report.withRestic.timers == [ ];
+    assert builtins.all (
+      name:
+      let
+        job = report.withRestic.jobs.${name};
+      in
+      job.timerConfig == null
+      && !job.createWrapper
+      && job.paths == [ "/var/cache/restic-backups-${name}/apps-input" ]
+      && job.cacheDir == "/var/cache/restic-backups-${name}/cache"
+      && lib.hasInfix "/bin/prepare-reader --max-age 86400 " job.prepare
+      && lib.hasInfix "rm -rf --" job.cleanup
+    ) report.withRestic.names;
+    assert builtins.all (
+      unit:
+      unit.TimeoutStartSec == "2h" && unit.TimeoutStopSec == "2min" && unit.KillMode == "control-group"
+    ) (builtins.attrValues report.withRestic.services);
+    assert report.withRestic.failedAssertions == [ ];
     assert builtins.any (lib.hasInfix "100.64.0.10") report.conflicts.trust;
     assert !report.conflicts.sameDomain;
     assert report.existingNetwork.instances == report.both.instances;
@@ -618,6 +812,10 @@ pkgs.runCommand "clanwright-apps-contract" { } ''
     test -x ${lib.escapeShellArg unit.captureCommand}
     test -x ${lib.escapeShellArg unit.validateCommand}
   '') (builtins.attrValues report.both.recovery)}
+  test -x ${report.exported.packages.livesync}/bin/prepare-reader
+  test -x ${report.exported.packages.livesync}/bin/validate
+  test -x ${report.exported.packages.vaultwarden}/bin/prepare-reader
+  test -x ${report.exported.packages.vaultwarden}/bin/validate
   cat > $out <<'REPORT'
   ${builtins.toJSON report}
   REPORT

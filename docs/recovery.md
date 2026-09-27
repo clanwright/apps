@@ -1,5 +1,151 @@
 # Application recovery contract
 
+## Native exports
+
+Set `export.enable = true` on an active Obsidian or Vaultwarden selection, either
+through `clanwright.apps.machines.<machine>` or its direct Clan recipe settings.
+The default is false. This creates manually callable native services and command
+outputs; it does not start captures or create timers, destinations or uploads.
+
+| App | Capture service | Machine command output | Native state/root |
+| --- | --- | --- | --- |
+| Vaultwarden | `apps-export-vaultwarden.service` | `config.system.build.appsVaultwardenExport` | `apps-export-vaultwarden`: `/var/lib/clanwright-app-exports/vaultwarden` |
+| LiveSync | `apps-export-livesync.service` | `config.system.build.appsLiveSyncExport` | `apps-export-livesync`: `/var/lib/clanwright-app-exports/livesync` |
+
+Systemd owns the operation: `ExecStartPre` prepares an empty private staging
+directory, `ExecStart` directly runs the existing application capture handler,
+`ExecStartPost` publishes the completed artifact, and `ExecStopPost` removes
+unfinished staging. State and runtime directories are root-owned, mode `0700`.
+There is no second executor, process supervisor or status ledger.
+
+Start a service explicitly, or let the consumer provide a native timer. Do not
+trigger a new capture independently from each destination's preparation hook:
+capture scheduling is separate from delivery, and production resumes before any
+reader copy or network operation begins. The service serializes its own starts;
+the existing capture lock also protects compatible command callers.
+
+Publication replaces a relative `current` pointer atomically under a bounded
+exclusive lock. Readers cannot observe a partial or mixed artifact. This does
+not promise durability across power loss. A failure before publication preserves
+the previous export. If publication succeeds but later reclamation fails, the
+new completed export remains usable and the service reports failure. Systemd
+result and journal are failure evidence; never infer successful capture solely
+from a destination's last upload time. Interrupted staging and noncurrent
+exporter-owned leftovers are reclaimed on a later capture. Neither publisher nor
+its cleanup owns reader directories.
+
+### Native Restic readers
+
+Each command output provides:
+
+```text
+bin/prepare-reader --max-age SECONDS ABSOLUTE_EMPTY_DIRECTORY
+bin/validate ABSOLUTE_RESTORED_DIRECTORY
+```
+
+`prepare-reader` runs as root and accepts an existing empty root-owned `0700`
+directory. It resolves the published export and copies it while holding a shared
+publication lock, then releases the lock before Restic runs. Copies share no
+mutable files with the published export; reflinks are an optional optimization
+with ordinary-copy fallback. Export roots and `current` are not direct Restic
+inputs. The only supported input is a reader directory whose preparation exited
+successfully. Failure can leave partial files, which the owning job must remove.
+
+`--max-age` is mandatory and positive. Admission checks run before and after
+copying and reject missing, malformed, future-dated or expired metadata. Age is
+measured conservatively from capture start, including any wait for the existing
+capture lock. It is an admission-age limit, not a maximum age on arrival at a
+slow destination. Publication-lock waits are bounded to 30 seconds and copying
+to 600 seconds plus a 5-second forced-termination allowance. Contention can
+cause a visible missed capture/publication; ordinary flock does not promise
+writer fairness.
+
+Every export carries `export.json` schema version 1: `appId`, `captureId`,
+`captureStartedAt`, `captureCompletedAt` (integer Unix seconds), `formatVersion`
+and `validatorStorePath`. This supplements the unchanged owner format marker.
+Reader copies and retries preserve that metadata. A later Restic snapshot of an
+old export is an additional delivery of the same recovery point, not a fresh
+capture. Keep the last successful export available after a failed capture while
+its original age meets the consumer's limit. The recorded validator path is
+provenance, not executable input or a GC root.
+
+The [consumer example](../examples/native-restic.nix) composes four independent
+`services.restic.backups` jobs: each app to two destinations. It stores private
+copies below each job's `CacheDirectory`, not in `/run`.
+Restic cache files live in a separate `cache` child beside `apps-input`, because
+Restic automatically excludes its own cache directory from snapshots.
+The native `backupPrepareCommand` obtains the copy and `backupCleanupCommand` removes it
+after process teardown, including failed preparation or upload. Next-start
+cleanup handles leftovers after host loss. Start these jobs through systemd;
+the example disables direct wrapper creation to preserve that lifecycle.
+
+The example explicitly uses `timerConfig = null`, because the NixOS Restic
+module otherwise defaults to daily timers. The consumer supplies destinations,
+credentials, schedules, retention and policy values (the example uses a one-day
+capture-age limit and a two-hour job deadline). Apps does not import Restic or
+provide a destination abstraction. Two simultaneous destinations require up to
+four export-sized trees per app, including capture staging and the published
+export, plus native database-helper staging. Storage capacity and I/O remain
+shared resources even though network delays hold no publication lock.
+
+### Disposable validation
+
+Invoke `bin/validate` from a separately retained matching command closure as
+root on a disposable Linux host with its local systemd system manager and cgroup
+v2 hierarchy. The caller must share the manager's mount and cgroup namespaces;
+calling from a container connected to host D-Bus is unsupported.
+Supply a quiescent, administrator-controlled,
+root-owned restored directory, including trusted parent directories; do not
+point it at production state. Nested mounts and concurrent hostile filesystem
+mutation are unsupported. Symbolic links, hard-linked files and special files
+are rejected. The source is left unchanged.
+
+The wrapper supplies disk-backed private scratch, an ordinary disposable copy
+readable by the sandbox identity, read-only input and Nix store, private writable
+temporary storage, isolated PID/network/IPC/UTS namespaces with loopback, and a
+store-backed `/bin/sh`. It clears inherited environment and extra file
+descriptors. The semantic validator runs with real UID/GID 65534, no supplementary
+groups or capabilities and no privilege escalation. Host `/etc`, production
+state, service sockets and credentials are not mounted into the sandbox. The
+trusted retained closure chooses the executable; restored metadata never does.
+
+Preparation steps and validator execution have finite deadlines. A transient
+systemd service owns the isolated validator and its descendants. After successful
+completion, the wrapper removes scratch only when the service's cgroup is absent
+or reports no live processes, including descendants. A cgroup v2 system-manager
+view is required for this automatic cleanup; uncertain observations retain scratch.
+Interruption
+requests that systemd stop the unit. Failed validation, cancellation, timeout or
+uncertain service handoff retains the exact printed, root-only scratch directory;
+reboot the disposable validation host before manually removing that directory.
+This conservative failure behavior also covers a process that cannot be killed
+within the service's stop deadline. There is no custom process supervisor,
+background cleanup daemon or directory-scanning registry.
+
+Capture unit start time is bounded to one hour. Stop budgets are 180 seconds for
+Vaultwarden and 90 seconds for LiveSync; direct handler execution and
+`KillMode=mixed` preserve their existing cleanup/resumption path before final
+forced termination. The existing handler requirements and limits below still
+apply. Capture needs privileged source and service-manager access; native reader
+jobs need only completed export access, and isolated validators receive no
+production privileges.
+
+### Lifecycle and compatibility
+
+`disabled-retained` preserves opted-in native export state while withdrawing
+runnable exporters and command outputs. Turning exports off or selecting `null`
+does not delete local data or historical backups. Retain the matching validator
+closure under a GC root and keep the pinned configuration before disabling,
+removing or upgrading an app. Merely recording a store path in metadata does
+not preserve the closure.
+
+Existing artifact formats remain unchanged. Historical captures without
+`export.json` can be checked by a compatible validator but are not silently
+admitted as newly published exports. Database-major migrations remain separate
+operations; the PostgreSQL 17/18 requirements below still apply.
+
+## Existing application-owned command interface
+
 Apps publishes two application-owned units through Primitives v0.2.0, revision
 `9dd13dd84479914fe8465ff6f77d2bb1f8034e2e`. The interface is
 `clanwright.recovery.units.<id>` with `contractVersion = 1`, `formatVersion`,
@@ -166,8 +312,21 @@ nix build --no-link --print-out-paths \
   .#checks.x86_64-linux.contract \
   .#checks.x86_64-linux.http-runtime \
   .#checks.aarch64-linux.recovery-runtime \
+  .#checks.aarch64-linux.export-tools \
+  .#checks.aarch64-linux.validator-isolation \
+  .#checks.aarch64-linux.export-runtime \
   > state/recovery-checks.log 2>&1
 ```
+
+`export-tools` builds the public reader/validator packages and native stage
+scripts. `validator-isolation` exercises the privileged-to-unprivileged handoff,
+namespace and descriptor isolation, cancellation and descendant cleanup in a
+disposable ARM Linux VM. `export-runtime` uses an ARM test driver with a complete
+x86_64 Linux VM, because the current Network host composition supports x86_64
+only. It imports the actual Clan machine module and the shipped native Restic
+example. TCG emulation is used when hardware acceleration is unavailable; report
+that boundary explicitly rather than calling it native x86 hardware evidence.
+These test definitions do not themselves establish a passing runtime result.
 
 The recovery runtime derivation retains a readable `check.log` and fixture
 diagnostics in its output. Its databases and service controller are disposable;
@@ -177,13 +336,15 @@ recipes. The composition check verifies the actual native recipe declarations.
 this does not add an ARM Vaultwarden package export. Use the runtime check that
 matches the builder's native architecture.
 
-On the current ARM-hosted builder, x86 Erlang's default JIT mapping fails before
+For the separate x86 `recovery-runtime` derivation under user-mode emulation on
+the current ARM-hosted builder, x86 Erlang's default JIT mapping fails before
 CouchDB can start (`prim_tty`/`nouser`). A test-source-only single-mapping JIT probe
 starts, but the public isolated helper clears that test flag. Native ARM runtime
 evidence must not be described as native x86 runtime acceptance. The release
 gate uses the complete recovery suite on a native supported Linux builder;
 native x86 runtime is an additional check, not a mandatory release gate.
-Emulated x86 execution is not a release gate. The test
+That user-mode emulated x86 check is not a release gate; the complete-VM
+`export-runtime` integration check above remains required. The test
 source CouchDB uses a store CA bundle through Erlang configuration; this
 configuration is not inherited by the isolated validator.
 

@@ -51,6 +51,11 @@
             default = "enabled";
             description = "Whether LiveSync runtime owners are active or retained for recovery.";
           };
+          export.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Provide a manually callable native LiveSync export.";
+          };
         };
       };
 
@@ -68,6 +73,22 @@
             appsPkgs = appsPkgsFor system;
             recoveryTools = recoveryToolsFor system;
             active = settings.lifecycle == "enabled";
+            exportEnabled = settings.export.enable;
+            recoveryUnit = import ../../recovery/livesync.nix {
+              inherit
+                lib
+                pkgs
+                config
+                settings
+                appsPkgs
+                ;
+              tools = recoveryTools;
+            };
+            exportFactory = import ../../recovery/export.nix {
+              inherit lib pkgs;
+              id = "livesync";
+              unit = recoveryUnit;
+            };
             publicIPv4 =
               if settings.ingress.publicIPv4 == null then
                 throw "Apps Obsidian: active installation requires publicIPv4"
@@ -117,17 +138,11 @@
               };
             };
           }
+          // lib.optionalAttrs exportEnabled {
+            clan.core.state.apps-export-livesync.folders = [ "/var/lib/clanwright-app-exports/livesync" ];
+          }
           // lib.optionalAttrs active {
-            clanwright.recovery.units.livesync = import ../../recovery/livesync.nix {
-              inherit
-                lib
-                pkgs
-                config
-                settings
-                appsPkgs
-                ;
-              tools = recoveryTools;
-            };
+            clanwright.recovery.units.livesync = recoveryUnit;
             networkCore = {
               caddy.fragments.${instanceName} = {
                 hostName = settings.domain;
@@ -143,6 +158,13 @@
             };
 
             networking.firewall.allowedTCPPorts = [ 443 ];
+          }
+          // lib.optionalAttrs (active && exportEnabled) {
+            system.build.appsLiveSyncExport = exportFactory.package;
+            systemd.services.apps-export-livesync = {
+              description = "Capture a private LiveSync export";
+              serviceConfig = exportFactory.serviceConfig;
+            };
           };
       };
   };

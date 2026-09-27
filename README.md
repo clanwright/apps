@@ -23,7 +23,7 @@ clanwright.apps.machines.server = {
 
 `obsidian` and `vaultwarden` are independently nullable and default to `null`. Each selected app defaults to `lifecycle = "enabled"`; `lifecycle = "disabled-retained"` keeps declared state and secret metadata while removing runtime and ingress requests. Setting an app back to `null` withdraws its declarations and does not itself prune or restore data. A retained-only machine needs no `installation` context. An active Obsidian selection needs public IPv4 and certificate email; it does not need private ingress. Active Vaultwarden also requires private ingress with a distinct destination IPv4. Both listeners use port 443 with one hostname; public `/admin` responds 404, while private admin routes bind only the declared private IPv4. The Vaultwarden recipe opens TCP 443 globally and on `tailscale0`. Network guards the private destination for the declared interfaces, with loopback implicitly trusted; its private ingress claim grants no port. This contract does not enroll a device in Tailscale.
 
-Obsidian accepts `domain`, optional `adminConfigSecretName` (default `obsidian-admin-ini`), and `lifecycle`. Vaultwarden accepts `domain`, optional `adminTokenSecretName` (default `vaultwarden-admin-token`), `lifecycle`, `registration.open` (default false), `fail2ban.ignoreIPs` (default empty), and `logLevel` (default `warn`). Secret names refer to existing SOPS bindings; no value is created or read by this module. Database names, users, backend ports, package versions, ACME certificate names, and Network instances are recipe owned.
+Obsidian accepts `domain`, optional `adminConfigSecretName` (default `obsidian-admin-ini`), `lifecycle`, and `export.enable` (default false). Vaultwarden accepts `domain`, optional `adminTokenSecretName` (default `vaultwarden-admin-token`), `lifecycle`, `export.enable` (default false), `registration.open` (default false), `fail2ban.ignoreIPs` (default empty), and `logLevel` (default `warn`). Secret names refer to existing SOPS bindings; no value is created or read by this module. Database names, users, backend ports, package versions, ACME certificate names, and Network instances are recipe owned.
 
 The app instances are `<machine>--app-obsidian` and `<machine>--app-vaultwarden`, with public service names `@clanwright/apps-obsidian` (`server`) and `@clanwright/apps-vaultwarden` (`app`). Active selections request the shared instances `<machine>--network-certificates`, `<machine>--network-caddy`, and `<machine>--network-firewall`. The same IDs are intended to compose with a consumer's existing core profile. The exported `packages.x86_64-linux.vaultwarden` is the package used by the Vaultwarden recipe; no other platform package export is promised.
 
@@ -41,6 +41,49 @@ Adopting these dependencies is a breaking upgrade for existing consumers:
 Service names, routes, state declarations and secret names are unchanged by this dependency refresh.
 
 ## Application recovery
+
+For native Restic integration, opt in to completed local exports independently
+on each selected recipe:
+
+```nix
+clanwright.apps.machines.server = {
+  obsidian.export.enable = true;
+  vaultwarden.export.enable = true;
+};
+```
+
+Keep the usual domain and installation settings. An active, opted-in recipe adds
+an unscheduled `apps-export-vaultwarden.service` or `apps-export-livesync.service`.
+Start it explicitly or supply a consumer-owned timer. Neither recipe enablement
+nor export enablement starts a capture, timer or upload automatically.
+
+The machine outputs `config.system.build.appsVaultwardenExport` and
+`config.system.build.appsLiveSyncExport` provide `bin/prepare-reader --max-age
+SECONDS ABSOLUTE_EMPTY_DIRECTORY` and `bin/validate ABSOLUTE_RESTORED_DIRECTORY`.
+Prepare a separate private copy for each native Restic job; upload reads that
+copy without holding the export lock. A failed new capture preserves the last
+complete export, but readers reject it once its original capture age exceeds
+their explicit limit. Upload time never resets capture time.
+
+Import the [native Restic example](examples/native-restic.nix) into the consuming
+machine's NixOS configuration for four independent manual jobs: each app to two
+destinations. The consumer supplies repository/password files, capture and
+upload schedules, retention and age/deadline policy. Apps has no Restic/provider
+dependency. Published roots are declared as native state; raw roots and the
+`current` pointer are not direct backup inputs. See the exact paths, privileges,
+cleanup and historical validation contract in [Recovery](docs/recovery.md).
+
+`disabled-retained` keeps opted-in export state while withdrawing runnable export
+units and command outputs. Turning exports off or withdrawing the app performs
+no filesystem deletion. Preserve compatible validator closures separately before
+changing the selection or upgrading database versions.
+
+Run retained validation commands as root on a disposable Linux host with a
+local systemd system manager and its cgroup v2 view. Successful validation cleans
+its private copy after confirmed process teardown; failed or uncertain runs
+retain the printed scratch directory for diagnosis and removal after reboot.
+
+### Existing command interface
 
 Enabled recipes publish `clanwright.recovery.units.vaultwarden` and
 `clanwright.recovery.units.livesync` through the
@@ -80,6 +123,9 @@ nix build --no-link \
   github:clanwright/apps/REVISION#checks.x86_64-linux.contract \
   github:clanwright/apps/REVISION#checks.x86_64-linux.http-runtime \
   github:clanwright/apps/REVISION#checks.aarch64-linux.recovery-runtime \
+  github:clanwright/apps/REVISION#checks.aarch64-linux.export-tools \
+  github:clanwright/apps/REVISION#checks.aarch64-linux.validator-isolation \
+  github:clanwright/apps/REVISION#checks.aarch64-linux.export-runtime \
   > state/release-standalone.log 2>&1
 bash checks/consumer-lock.sh github:clanwright/apps/REVISION /path/to/existing-consumer/flake.lock
 ```
