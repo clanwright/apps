@@ -2,6 +2,14 @@
 
 Tracking: [Apps #1](https://github.com/clanwright/apps/issues/1).
 
+## Resolution in Apps v0.3.1
+
+Network resolved the portable release-graph issue in [v3.0.1](https://github.com/clanwright/network/releases/tag/v3.0.1), commit `efeaa948d58e678d27a5a812f0293a3ada71c681`; see [Network #7](https://github.com/clanwright/network/issues/7). Apps v0.3.1 adopts that exact release. The relative Network input is removed using Network’s public release contract; Apps does not copy its implementation or override external inputs. Primitives remains v0.2.0 and all other dependency source identities are preserved.
+
+Consumers should update Apps and their direct Network/Primitives pins together with ordinary `nix flake update apps network primitives`, then check source convergence and their own configuration. The release gate covers fresh consumers and updates from a preserved existing consumer lock. This resolves Apps packaging on released Nix; it does not claim that Nix’s general relative-input defect or the independent synthetic reproduction is fixed.
+
+The sections below record the failure before this adoption. Their blocked outcomes apply to those older revisions.
+
 ## Observed failure
 
 On 2026-09-26, Nix `2.34.7+1` failed ordinary `nix flake lock` for a fresh consumer whose only input was `github:clanwright/apps/v0.1.0` (Apps revision `186577efaea8f81608b1bd12c4736b8ffca2491a`). The error resolved `apps/network/data-mesher` against the Apps source tree:
@@ -46,12 +54,12 @@ The subsequent candidate using Network v3.0.0 (`bfba5e74c3ee09ab92534fc2e7fdf31d
 
 This points to Nix's lock-generation path, rather than a missing Apps-owned file. It is not evidence that a patched or future Nix version passes Apps acceptance. The PR also distinguishes its source-path fix from a remaining lock-parent rebasing optimization; do not describe the latter as the proven sole cause here.
 
-## Handoff and closure
+## Historical handoff and closure criteria
 
-An existing consumer with a valid committed lock can continue using that lock, provided its own evaluation and build checks pass. This defect occurs during dependency locking; it does not itself require stopping running applications. Keep the working lock in version control and test dependency updates separately. Fresh adoption and lock regeneration remain blocked on the tested Nix versions; this is not an unconditional guarantee that every update of an existing consumer will succeed.
+An existing consumer with a valid committed lock can continue using that lock, provided its own evaluation and build checks pass. This defect occurs during dependency locking; it does not itself require stopping running applications. Keep the working lock in version control and test dependency updates separately. For those older Apps releases, fresh adoption and lock regeneration remain blocked on the tested Nix versions; this is not an unconditional guarantee that every update of an existing consumer will succeed.
 
 The v0.1.0 reproduction above used Network revision `7cbc2a01e9e18299b2ac606714081cc57470778d` and Primitives revision `6979fee86075ae62492e1572be434caf84c8337b`. Current accepted dependency pins are listed in [README](../README.md); preserve their source hashes and upstream dependency locks when validating a candidate. Do not copy Network implementation into Apps or add consumer `follows` overrides. No Network implementation change is proposed by this diagnosis.
 
-The upstream follow-up is to validate a Nix version containing an accepted fix with the synthetic reproduction and then run `checks/consumer-lock.sh` against the published Apps revision. Record the exact Nix version and both results. A manually rebased consumer lock cannot substitute for fresh generation.
+The original upstream follow-up was to validate a Nix version containing an accepted fix with the synthetic reproduction and then run `checks/consumer-lock.sh` against the published Apps revision. Record the exact Nix version and both results. A manually rebased consumer lock cannot substitute for fresh generation.
 
-Apps #1 remains open until normal fresh locking, module evaluation, source-identity checks, and byte-identical relocking pass. The checks and diagnosis added here expose the blocker; they do not remove it. The release procedure in [README](../README.md#release-acceptance) requires this gate alongside standalone checks. No deployment or real credentials are required.
+Apps #1 requires normal fresh locking, module evaluation, source-identity checks, and byte-identical relocking against the published Apps revision. The original checks and diagnosis exposed the blocker; Network v3.0.1 supplies the packaging fix adopted above. The release procedure in [README](../README.md#release-acceptance) requires this gate alongside standalone checks. No deployment or real credentials are required.

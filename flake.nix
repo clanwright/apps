@@ -3,7 +3,7 @@
 
   inputs = {
     clan-core.url = "github:clan-lol/clan-core/c612dac4b2bfb5278b7c366f250044ddb5401bcb";
-    network.url = "github:clanwright/network/bfba5e74c3ee09ab92534fc2e7fdf31dc4525bb2"; # v3.0.0
+    network.url = "github:clanwright/network/efeaa948d58e678d27a5a812f0293a3ada71c681"; # v3.0.1
     primitives.url = "github:clanwright/primitives/9dd13dd84479914fe8465ff6f77d2bb1f8034e2e"; # v0.2.0
     apps-nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
   };

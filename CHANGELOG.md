@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.3.1 — 2026-09-27
+
+- Adopt Network v3.0.1 (`efeaa948d58e678d27a5a812f0293a3ada71c681`) to fix ordinary fresh nested-consumer locking and dependency updates on released Nix versions.
+- Extend consumer acceptance to coordinated Apps/Network/Primitives updates, exact source convergence and byte-identical relocking.
+- Preserve application recipes, state, secret metadata, routes, recovery contracts and all other accepted dependency sources. Earlier PostgreSQL and ACME migration requirements still apply.
+
 ## v0.3.0 — 2026-09-27
 
 - Publish application-owned `vaultwarden` and `livesync` recovery units through Primitives v0.2.0's public contract, without enabling a backup executor or provider.
