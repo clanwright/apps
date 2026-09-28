@@ -1,7 +1,7 @@
 # Bound semantic validation on an existing application host
 
-Status: accepted and implemented for Apps issue #5; standalone acceptance passed.
-Release pending.
+Status: accepted and implemented for Apps issue #5 in v0.5.0; standalone
+acceptance passed.
 
 The existing namespace sandbox already keeps the application validator away
 from live state, service sockets, credentials and external networking. Its
