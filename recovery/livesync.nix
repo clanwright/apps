@@ -29,16 +29,50 @@ let
         # The production instance stores the LiveSync data in the obsidian DB.
         curl -fsS --max-time 30 -u "$COUCHDB_USER:$COUCHDB_PASSWORD" "$COUCHDB_URL/_all_dbs" \
           | jq -e 'index("obsidian") != null' >/dev/null
-        curl -fsS --max-time 600 -u "$COUCHDB_USER:$COUCHDB_PASSWORD" \
-          "$COUCHDB_URL/obsidian/_all_docs?include_docs=true&conflicts=true" > /tmp/livesync-docs.json
-        : > /tmp/livesync-conflicts.jsonl
-        while IFS=$'\t' read -r document revision; do
-          curl -fsS --max-time 30 -u "$COUCHDB_USER:$COUCHDB_PASSWORD" \
-            "$COUCHDB_URL/obsidian/$document?rev=$revision" >> /tmp/livesync-conflicts.jsonl
-          printf '\n' >> /tmp/livesync-conflicts.jsonl
-        done < <(jq -r '.rows[] | .doc as $doc | ($doc._conflicts // [])[] | [($doc._id | @uri), (. | @uri)] | @tsv' /tmp/livesync-docs.json)
-        jq -e --slurpfile conflicts /tmp/livesync-conflicts.jsonl '
-          (.rows | map(select(.doc != null) | .doc)) + $conflicts as $docs
+        # Only semantic metadata reaches the global graph check. Keep payloads
+        # bounded to one page (or one conflict revision) while preserving types.
+        metadata='
+          def compact:
+            {_id, type, _deleted, deleted, children, data,
+             eden: (if (.eden | type) == "object" then
+               (.eden | with_entries(.value |=
+                 if type == "object" then
+                   {data: (.data | if type == "string" then "" else . end)}
+                 else . end))
+               else .eden end)}
+            | .data |= if type == "string" then "" else . end;
+        '
+        : > /tmp/livesync-docs.jsonl
+        cursor=""
+        while :; do
+          page_args=()
+          if [ -n "$cursor" ]; then
+            page_args=(--data-urlencode "startkey=$cursor" --data-urlencode 'skip=1')
+          fi
+          curl -fsS --max-time 30 -u "$COUCHDB_USER:$COUCHDB_PASSWORD" --get \
+            --data-urlencode 'include_docs=true' --data-urlencode 'conflicts=true' \
+            --data-urlencode 'limit=32' "''${page_args[@]}" \
+            "$COUCHDB_URL/obsidian/_all_docs" > /tmp/livesync-page.json
+          jq -e '.rows | type == "array" and length <= 32
+            and all(.[]; (.id | type) == "string" and (.doc | type) == "object"
+              and .id == .doc._id)' /tmp/livesync-page.json >/dev/null
+          count=$(jq '.rows | length' /tmp/livesync-page.json)
+          if [ "$count" -eq 0 ]; then break; fi
+          next_cursor=$(jq -c '.rows[-1].id' /tmp/livesync-page.json)
+          test "$next_cursor" != "$cursor"
+          jq -c "$metadata .rows[].doc | compact" /tmp/livesync-page.json >> /tmp/livesync-docs.jsonl
+          jq -r '.rows[] | .doc as $doc | ($doc._conflicts // [])[] | [($doc._id | @uri), (. | @uri)] | @tsv' \
+            /tmp/livesync-page.json > /tmp/livesync-conflicts.tsv
+          while IFS=$'\t' read -r document revision; do
+            curl -fsS --max-time 30 -u "$COUCHDB_USER:$COUCHDB_PASSWORD" \
+              "$COUCHDB_URL/obsidian/$document?rev=$revision" \
+              | jq -ce "$metadata compact" >> /tmp/livesync-docs.jsonl
+          done < /tmp/livesync-conflicts.tsv
+          cursor=$next_cursor
+          if [ "$count" -lt 32 ]; then break; fi
+        done
+        jq -e -s '
+          . as $docs
           | ($docs | group_by(._id) | map({ key: .[0]._id, value: . }) | from_entries) as $byId
           | all($docs[];
               . as $parent
@@ -53,7 +87,7 @@ let
                       or (($byId[$child] // []) | any(.[];
                           .type == "leaf" and ._deleted != true and (.data | type == "string"))))
                 else true end)
-        ' /tmp/livesync-docs.json >/dev/null
+        ' /tmp/livesync-docs.jsonl >/dev/null
       '';
     }
   );

@@ -338,7 +338,11 @@ policy before accepting the recovery point; the validator never deletes records
 or silently ignores missing data.
 
 LiveSync validation reads the restored `obsidian` database and checks document/chunk
-relationships, including surviving conflicting metadata revisions. An empty
+relationships, including surviving conflicting metadata revisions.
+Documents are read in pages of 32 with a 30-second request
+deadline. Payload strings are reduced to type evidence before the relationship
+check; its metadata index still grows with the number of documents. The wrapper's
+overall deadline and memory limit remain unchanged. An empty
 `obsidian` database, unused chunks and deleted documents are valid
 cases. It does not decrypt user content or assert plaintext file paths.
 An artifact without the `obsidian` database is rejected as an uninitialized

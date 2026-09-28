@@ -472,17 +472,17 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1790511594,
-        "narHash": "sha256-qTDq/xRe11XdtZs4hIwwKcW25CiZmQpGua1m9JNDVUc=",
+        "lastModified": 1790605117,
+        "narHash": "sha256-NNr+UYbf7ImcAoBqeCWIOogYY0uC0SEtx7xYKhmHzJM=",
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "9dd13dd84479914fe8465ff6f77d2bb1f8034e2e",
+        "rev": "77e744cadad532e8458b19a8df71a97794434bf7",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "9dd13dd84479914fe8465ff6f77d2bb1f8034e2e",
+        "rev": "77e744cadad532e8458b19a8df71a97794434bf7",
         "type": "github"
       }
     },
