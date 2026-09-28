@@ -33,3 +33,11 @@ runtime checks; see
 [ADR 0001](docs/adr/0001-native-export-reader-isolation.md) and
 [ADR 0002](docs/adr/0002-native-export-lifecycle.md). The currently shipped
 command interface is documented in [Recovery](docs/recovery.md).
+
+Same-host semantic validation is implemented and verified for issue #5; release
+is pending. A bounded native systemd service owns preparation and validation,
+with one invocation admitted across both apps. Confirmed teardown permits
+cleanup without reboot; uncertainty preserves scratch for operator recovery.
+The host must reserve scratch capacity and application headroom. See
+[ADR 0003](docs/adr/0003-same-host-validation.md) for the decision and acceptance
+boundary, and [Recovery](docs/recovery.md) for the supported invocation.

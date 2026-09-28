@@ -88,11 +88,12 @@ four export-sized trees per app, including capture staging and the published
 export, plus native database-helper staging. Storage capacity and I/O remain
 shared resources even though network delays hold no publication lock.
 
-### Disposable validation
+### Validation on an existing application host
 
 Invoke `bin/validate` from a separately retained matching command closure as
-root on a disposable Linux host with its local systemd system manager and cgroup
-v2 hierarchy. The caller must share the manager's mount and cgroup namespaces;
+root on a Linux host with its local systemd system manager and cgroup
+v2 hierarchy. The existing application host is supported when it meets the
+resource and storage prerequisites below; a separate VM is not required. The caller must share the manager's mount and cgroup namespaces;
 calling from a container connected to host D-Bus is unsupported.
 Supply a quiescent, administrator-controlled,
 root-owned restored directory, including trusted parent directories; do not
@@ -109,18 +110,78 @@ groups or capabilities and no privilege escalation. Host `/etc`, production
 state, service sockets and credentials are not mounted into the sandbox. The
 trusted retained closure chooses the executable; restored metadata never does.
 
-Preparation steps and validator execution have finite deadlines. A transient
-systemd service owns the isolated validator and its descendants. After successful
-completion, the wrapper removes scratch only when the service's cgroup is absent
-or reports no live processes, including descendants. A cgroup v2 system-manager
-view is required for this automatic cleanup; uncertain observations retain scratch.
-Interruption
-requests that systemd stop the unit. Failed validation, cancellation, timeout or
-uncertain service handoff retains the exact printed, root-only scratch directory;
-reboot the disposable validation host before manually removing that directory.
-This conservative failure behavior also covers a process that cannot be killed
-within the service's stop deadline. There is no custom process supervisor,
-background cleanup daemon or directory-scanning registry.
+Preparation and semantic execution share a native transient systemd service,
+`apps-validate.service`, and one operation budget. Admission is host-wide across
+both applications: overlapping calls fail rather than queue. This bound applies
+to these updated retained wrappers; do not concurrently invoke an older wrapper
+or the bare `validateCommand`.
+
+The fixed resource envelope covers input scanning, copying, permission handoff,
+and the isolated database processes:
+
+| Control | Bound |
+| --- | --- |
+| CPU | `CPUQuota=100%` (one CPU worth of time), nice level 10 |
+| Memory | `MemoryMax=1G`, `MemorySwapMax=0`, `OOMPolicy=kill` |
+| Processes and threads | `TasksMax=128` |
+| I/O priority | `IOWeight=10`; relative weight, not a bandwidth or latency cap |
+| Service preparation and validation | `TimeoutStartSec=600s`, with `TimeoutStopSec=30s` for teardown |
+
+The host must have functional cgroup v2 CPU, memory and PID controllers and
+sufficient capacity left for its running applications. The cap is a maximum,
+not a reservation for either workload. An artifact that cannot be validated
+within this envelope fails; it does not justify retrying with an unbounded bare
+handler on production.
+
+**Storage prerequisite:** scratch uses `/var/tmp`, containing a full independent
+input copy plus disposable database/import files. Provision capacity for both
+and for retained failed attempts before starting. For same-host use, reserve
+scratch capacity on a separate filesystem or with an administrator-managed
+quota so exhaustion cannot consume application storage. The command does not
+provision storage, set quotas, or bound aggregate file bytes. CPU/memory/task
+limits and I/O weight do not isolate shared kernel faults, storage latency,
+filesystem failure or uninterruptible I/O. A host needing protection from those
+shared failure domains still needs a separate validation host.
+
+The transient unit uses `Type=oneshot` and `RemainAfterExit=yes`: completion
+retains its native slot until the wrapper confirms teardown. Its unique native
+description identifies the caller allowed to stop it. `KillMode=control-group`,
+forced termination, no restart and no delegation cover detached descendants.
+The wrapper prints captured validator output after the service returns; inspect
+the printed scratch directory and journal while it is running.
+The launcher has a separate 660-second bound plus a 5-second kill allowance;
+individual manager calls have 40 seconds plus 5 seconds. These control-plane
+budgets are additional to the service budget, not a promise that the CLI returns
+within 600 seconds. Catchable cancellation requests native stop and waits for
+the bounded launcher before checking teardown. Uninterruptible kernel I/O may
+outlive any userspace deadline; it never authorizes cleanup.
+
+Success removes scratch only after stopping the owned unit and confirming both
+terminal manager state with no pending job and an absent or empty cgroup.
+Semantic failure, timeout and cancellation return failure and retain the printed
+root-only scratch directory. When the wrapper explicitly reports **teardown
+confirmed**, the administrator may remove that exact directory without reboot;
+the wrapper releases the native slot for another validation. A failed validation
+is never reported as successful because cleanup succeeded.
+
+For **handoff or teardown unconfirmed**, or a caller killed with SIGKILL, preserve
+scratch and inspect `apps-validate.service`. An unkillable process or missing
+manager evidence is not permission to remove files or reset native failure
+state. Do not retry automatically. For manual recovery, serialize with the same
+`/run/lock/apps-validate.lock`, identify the unit by its printed scratch/token and
+native description, request a bounded native stop, then verify terminal state,
+no pending job and an absent cgroup or `populated 0` in its `cgroup.events`.
+Only after that proof may an administrator reset the failed unit and remove its
+exact retained scratch. Unknown or delayed submission also requires establishing
+that the launcher has finished and the manager has processed it; disappearance
+of the caller alone is insufficient. If these facts cannot be established,
+leave the slot and data untouched and diagnose the host. A reboot may be an
+operator's last-resort remedy for a broken kernel/manager; the validator never
+requests one, and it is not part of normal cleanup.
+
+There is no custom process supervisor, background cleanup daemon or
+directory-scanning registry.
+
 
 Capture unit start time is bounded to one hour. Stop budgets are 180 seconds for
 Vaultwarden and 90 seconds for LiveSync; direct handler execution and
@@ -138,6 +199,14 @@ does not delete local data or historical backups. Retain the matching validator
 closure under a GC root and keep the pinned configuration before disabling,
 removing or upgrading an app. Merely recording a store path in metadata does
 not preserve the closure.
+
+The v0.4.0 wrapper continues to require a disposable validation host. Same-host
+support requires the updated wrapper closure, not a consumer-side wrapper around
+the old command. No recipe option or invocation change is needed. Retain the
+new `config.system.build.appsVaultwardenExport` or `appsLiveSyncExport` closure
+under a GC root after adopting the release. A matching updated validator can
+validate the unchanged v0.4.0 artifact formats, including historical captures
+without `export.json`. Metadata's `validatorStorePath` is never executed.
 
 Existing artifact formats remain unchanged. Historical captures without
 `export.json` can be checked by a compatible validator but are not silently
@@ -320,13 +389,18 @@ nix build --no-link --print-out-paths \
 
 `export-tools` builds the public reader/validator packages and native stage
 scripts. `validator-isolation` exercises the privileged-to-unprivileged handoff,
-namespace and descriptor isolation, cancellation and descendant cleanup in a
-disposable ARM Linux VM. `export-runtime` uses an ARM test driver with a complete
+namespace and descriptor isolation, effective preparation/execution resource
+limits, cross-application admission, cancellation, caller death and descendant
+cleanup in a disposable ARM Linux VM. `export-runtime` uses an ARM test driver with a complete
 x86_64 Linux VM, because the current Network host composition supports x86_64
 only. It imports the actual Clan machine module and the shipped native Restic
 example. TCG emulation is used when hardware acceleration is unavailable; report
 that boundary explicitly rather than calling it native x86 hardware evidence.
-These test definitions do not themselves establish a passing runtime result.
+The same-host scenarios use Nix-defined shell fixtures with the existing NixOS
+test driver. They check HTTP availability, service identity and live fixture
+data while the public validator processes restored copies, including rejection
+of an unsupported format. These test definitions do not themselves establish
+a passing runtime result.
 
 The recovery runtime derivation retains a readable `check.log` and fixture
 diagnostics in its output. Its databases and service controller are disposable;

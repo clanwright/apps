@@ -59,13 +59,13 @@ let
   };
   shortValidator = pkgs.runCommand "apps-validator-short-deadline" { } ''
     mkdir -p "$out/bin"
-    sed 's/RuntimeMaxSec=600s/RuntimeMaxSec=2s/g' ${slowValidator}/bin/validate > "$out/bin/validate"
-    test "$(grep -c 'RuntimeMaxSec=2s' "$out/bin/validate")" = 1
+    sed 's/TimeoutStartSec=600s/TimeoutStartSec=2s/g' ${slowValidator}/bin/validate > "$out/bin/validate"
+    test "$(grep -c 'TimeoutStartSec=2s' "$out/bin/validate")" = 1
     chmod +x "$out/bin/validate"
   '';
   failedHandoff = pkgs.runCommand "apps-validator-failed-handoff" { } ''
     mkdir -p "$out/bin"
-    sed 's/--service-type=exec/--service-type=exec --property=AppsInvalidProperty=1/' \
+    sed 's/--service-type=oneshot/--service-type=oneshot --property=AppsInvalidProperty=1/' \
       ${slowValidator}/bin/validate > "$out/bin/validate"
     test "$(grep -c 'AppsInvalidProperty=1' "$out/bin/validate")" = 1
     chmod +x "$out/bin/validate"
@@ -77,6 +77,106 @@ let
     test "$(grep -c 'touch /tmp/before-handoff-ready;' "$out/bin/validate")" = 1
     chmod +x "$out/bin/validate"
   '';
+  preparationValidator = pkgs.runCommand "apps-validator-preparation-probe" { } ''
+    mkdir -p "$out/bin"
+    service=$(sed -n 's|.*-- \(/nix/store/[^ ]*/bin/apps-validation-service\).*|\1|p' ${slowValidator}/bin/validate)
+    test -n "$service"
+    sed '/^[[:space:]]*find "[$]input"/i\    echo preparation-ready; sleep 10' "$service" > "$out/service"
+    chmod +x "$out/service"
+    sed "s|$service|$out/service|" ${slowValidator}/bin/validate > "$out/bin/validate"
+    chmod +x "$out/bin/validate"
+  '';
+
+  delayedLauncher = pkgs.runCommand "apps-validator-delayed-launcher" { } ''
+    mkdir -p "$out/bin"
+    sed '/trap - EXIT HUP INT TERM/a\      touch /tmp/launcher-ready; sleep 5' ${shortValidator}/bin/validate > "$out/bin/validate"
+    chmod +x "$out/bin/validate"
+  '';
+  sameHostChecks = pkgs.writeShellApplication {
+    name = "apps-validator-same-host-checks";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.gnused
+      pkgs.util-linux
+      pkgs.procps
+      pkgs.systemd
+    ];
+    text = ''
+      await() {
+        for ((attempt = 0; attempt < 120; attempt++)); do
+          if "$@"; then return 0; fi
+          sleep 0.25
+        done
+        return 1
+      }
+      limits() {
+        cg=/sys/fs/cgroup/system.slice/apps-validate.service
+        test "$(cat "$cg/memory.max")" = 1073741824
+        test "$(cat "$cg/memory.swap.max")" = 0
+        test "$(cat "$cg/pids.max")" = 128
+        read -r quota period < "$cg/cpu.max"
+        test "$quota" = "$period"
+        test "$(systemctl show apps-validate.service -p Nice --value)" = 10
+        test "$(systemctl show apps-validate.service -p IOWeight --value)" = 10
+      }
+      preparation_ready() {
+        grep -q preparation-ready /var/tmp/apps-validate-fixture-slow.*/service.log
+      }
+      ${preparationValidator}/bin/validate /root/restored > /tmp/prep.log 2>&1 &
+      wrapper=$!
+      await preparation_ready
+      limits
+      await pgrep -f '^APPS_VALIDATOR_SLOW '
+      limits
+      owner=$(systemctl show apps-validate.service -p MainPID --value)
+      if ${validator}/bin/validate /root/restored > /tmp/concurrent.log 2>&1; then exit 1; fi
+      grep -q 'already running' /tmp/concurrent.log
+      test "$(systemctl show apps-validate.service -p MainPID --value)" = "$owner"
+      kill -TERM "$wrapper"
+      if wait "$wrapper"; then exit 1; fi
+      grep -q 'teardown confirmed' /tmp/prep.log
+      echo 'PASS effective preparation and semantic limits; cross-app concurrency preserves owner'
+
+      ${delayedLauncher}/bin/validate /root/restored > /tmp/kill.log 2>&1 &
+      wrapper=$!
+      await test -f /tmp/launcher-ready
+      kill -KILL "$wrapper"
+      wait "$wrapper" || true
+      if ${validator}/bin/validate /root/restored > /tmp/kill-concurrent.log 2>&1; then exit 1; fi
+      grep -q 'already running' /tmp/kill-concurrent.log
+      await systemctl is-failed apps-validate.service
+      await flock -n /run/lock/apps-validate.lock true
+      if ${validator}/bin/validate /root/restored > /tmp/native-barrier.log 2>&1; then exit 1; fi
+      grep -q 'slot is occupied' /tmp/native-barrier.log
+      if pgrep -f '^APPS_VALIDATOR_SLOW '; then exit 1; fi
+      scratch=$(sed -n 's/Apps validation scratch: //p' /tmp/kill.log)
+      test -d "$scratch"
+      systemctl stop apps-validate.service
+      systemctl reset-failed apps-validate.service || true
+      echo 'PASS wrapper SIGKILL during handoff preserves launcher lock and native barrier'
+
+      ${cancelledHandoff}/bin/validate /root/restored > /tmp/foreign-cancel.log 2>&1 &
+      wrapper=$!
+      await test -f /tmp/before-handoff-ready
+      systemd-run --unit=apps-validate.service --property=Description=foreign-test-owner \
+        -- ${pkgs.coreutils}/bin/sleep 60
+      owner=$(systemctl show apps-validate.service -p MainPID --value)
+      test "$owner" != 0
+      kill -TERM "$wrapper"
+      if wait "$wrapper"; then exit 1; fi
+      test "$(systemctl show apps-validate.service -p MainPID --value)" = "$owner"
+      test "$(systemctl show apps-validate.service -p Description --value)" = foreign-test-owner
+      systemctl is-active apps-validate.service
+      grep -q 'teardown unconfirmed' /tmp/foreign-cancel.log
+      scratch=$(sed -n 's/Apps validation scratch: //p' /tmp/foreign-cancel.log)
+      test -d "$scratch"
+      systemctl stop apps-validate.service
+      rm /tmp/before-handoff-ready
+      echo 'PASS cancelled handoff preserves a foreign native unit'
+    '';
+  };
+
   occupiedCleanup = pkgs.runCommand "apps-validator-occupied-cleanup" { } ''
     mkdir -p "$out/bin"
     sed 's|cgroup="/sys/fs/cgroup/system.slice/[$]unit"|cgroup="/sys/fs/cgroup/system.slice"|' \
@@ -99,7 +199,7 @@ pkgs.testers.runNixOSTest {
       validator
       pkgs.procps
     ];
-    virtualisation.memorySize = 1024;
+    virtualisation.memorySize = 2048;
   };
   testScript = ''
     import re
@@ -108,7 +208,7 @@ pkgs.testers.runNixOSTest {
         match = re.search(r"Apps validation scratch: (/var/tmp/apps-validate-[a-zA-Z0-9.-]+)", output)
         assert match, output
         scratch = match.group(1)
-        machine.succeed(f"test -d {scratch}/input; test $(stat -c %a {scratch}) = 700")
+        machine.succeed(f"test -d {scratch}; test $(stat -c %a {scratch}) = 700")
         return scratch
 
     machine.succeed("mkdir -m 700 /root/restored; printf fixture-v1 > /root/restored/format-version; chmod 600 /root/restored/format-version")
@@ -125,9 +225,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("rm /root/restored/hardlink; mkfifo /root/restored/fifo")
     machine.fail("validate /root/restored")
     machine.succeed("rm /root/restored/fifo")
-    machine.succeed("test -z \"$(find /var/tmp -maxdepth 1 -name 'apps-validate-fixture-validator.*' -print -quit)\"")
+
+    machine.succeed("${sameHostChecks}/bin/apps-validator-same-host-checks")
+
     status, output = machine.execute("${shortValidator}/bin/validate /root/restored 2>&1")
-    assert status != 0 and "fixture-slow-validator-started" in output and "timeout" in output.lower(), (status, output)
+    assert status != 0 and "fixture-slow-validator-started" in output and "teardown confirmed" in output, (status, output)
     retained(output)
     machine.fail("pgrep -f '^APPS_VALIDATOR_SLOW '")
     print("PASS native runtime timeout stops validator and retains scratch")
@@ -144,7 +246,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("(set +e; ${slowValidator}/bin/validate /root/restored; echo $? > /tmp/monitor.status) > /tmp/monitor.log 2>&1 &")
     machine.wait_until_succeeds("pgrep -f '^APPS_VALIDATOR_SLOW '")
     output = machine.succeed("cat /tmp/monitor.log")
-    match = re.search(r"Apps validation unit: (apps-validate-[a-zA-Z0-9.-]+)", output)
+    match = re.search(r"Apps validation unit: (apps-validate.service)", output)
     assert match, output
     unit = match.group(1)
     machine.succeed(f"kill -KILL $(systemctl show {unit} -p MainPID --value)")

@@ -78,10 +78,16 @@ units and command outputs. Turning exports off or withdrawing the app performs
 no filesystem deletion. Preserve compatible validator closures separately before
 changing the selection or upgrading database versions.
 
-Run retained validation commands as root on a disposable Linux host with a
-local systemd system manager and its cgroup v2 view. Successful validation cleans
-its private copy after confirmed process teardown; failed or uncertain runs
-retain the printed scratch directory for diagnosis and removal after reboot.
+Run updated retained validation commands as root on the existing application
+host or a separate Linux host, with its local systemd manager and cgroup v2
+CPU/memory/PID controllers. The wrapper limits resources and admits one validation
+at a time across both applications; provision isolated scratch capacity under
+`/var/tmp`. It validates only a separately restored copy. Applications continue
+running. Confirmed teardown permits cleanup without a reboot; uncertain teardown
+retains scratch and requires operator recovery. See the exact supported envelope
+and failure procedure in [Recovery](docs/recovery.md#validation-on-an-existing-application-host).
+The v0.4.0 wrapper retains its original disposable-host contract; same-host use
+requires retaining the updated closure, not only changing invocation instructions.
 
 ### Existing command interface
 

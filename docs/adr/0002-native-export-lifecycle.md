@@ -35,3 +35,10 @@ The independent reader copies and explicit capture-age policy in
 [ADR 0001](0001-native-export-reader-isolation.md) remain unchanged. This decision
 replaces the unpublished Python implementation and the working draft's custom
 filesystem-durability and hostile concurrent-input machinery.
+
+## Same-host validation follow-up
+
+The disposable-host restriction above describes v0.4.0. For the supported
+same-host path, [ADR 0003](0003-same-host-validation.md) supersedes the validator
+lifecycle and failure-cleanup paragraphs. Export publication and reader lifetime
+are unchanged.
