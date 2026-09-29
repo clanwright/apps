@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.6.0 — 2026-09-29
+
+- Adopt Network v4.0.0 (`2981962f1f590fae66c05c50a3d793825281de9e`). Its only change is the static WAN address model; Apps recipes do not use static WAN and their Network claims are unchanged.
+- Breaking for consumers that use `@clanwright/network-wan-static` with the coordinated Network pin: migrate `secondaryIPv4`, `routeTableName`, `routeTableId` and `rulePriority` to `additionalIPv4s` before adoption.
+- Clan, Primitives, Apps nixpkgs and every other locked source are unchanged, as are service names, routes, state declarations and secret names.
+
 ## v0.4.0 — 2026-09-27
 
 - Add opt-in native application export services and independent reader copies for native Restic jobs, with complete-only publication, capture-age admission and last-good retry semantics.

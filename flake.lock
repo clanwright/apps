@@ -294,17 +294,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1790529449,
-        "narHash": "sha256-jp/pruA3qXBBATTgn+3Q9k6N/ugJcMw9HEdSGxYUokU=",
+        "lastModified": 1790710718,
+        "narHash": "sha256-yoNL2uDIcsYHJMDXk3McV1DVVgEynQ77fX1YL+7fBW4=",
         "owner": "clanwright",
         "repo": "network",
-        "rev": "efeaa948d58e678d27a5a812f0293a3ada71c681",
+        "rev": "2981962f1f590fae66c05c50a3d793825281de9e",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "network",
-        "rev": "efeaa948d58e678d27a5a812f0293a3ada71c681",
+        "rev": "2981962f1f590fae66c05c50a3d793825281de9e",
         "type": "github"
       }
     },
