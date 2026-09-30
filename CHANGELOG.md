@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.6.1 — 2026-09-30
+
+- Adopt Network v4.1.0 (`a216e7b311c2f2e36fa0e0ee137c867acb04a54e`). It adds destination-scoped public firewall ports (`public.destinations`) to `@clanwright/network-firewall`; the change is additive and Apps recipes keep their host-wide HTTPS port and route claims.
+- Only the `network` lock node changes. Clan, Primitives, Apps nixpkgs, service names, routes, state declarations and secret names are unchanged. The Network v4.0.0 static WAN migration still applies to consumers upgrading from earlier releases.
+
 ## v0.6.0 — 2026-09-29
 
 - Adopt Network v4.0.0 (`2981962f1f590fae66c05c50a3d793825281de9e`). Its only change is the static WAN address model; Apps recipes do not use static WAN and their Network claims are unchanged.
