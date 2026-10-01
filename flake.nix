@@ -3,8 +3,8 @@
 
   inputs = {
     clan-core.url = "github:clan-lol/clan-core/c612dac4b2bfb5278b7c366f250044ddb5401bcb";
-    network.url = "github:clanwright/network/a216e7b311c2f2e36fa0e0ee137c867acb04a54e"; # v4.1.0
-    primitives.url = "github:clanwright/primitives/77e744cadad532e8458b19a8df71a97794434bf7"; # v0.2.1
+    network.url = "github:clanwright/network/9421c102c9536a4345446a74aaaeb603cb6a23e3"; # v1.0.0
+    primitives.url = "github:clanwright/primitives/8e64d6c436af087684acaed0cc3190a3062c2233"; # v1.0.0
     apps-nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
   };
 
@@ -19,25 +19,21 @@
     }:
     let
       lib = clan-core.inputs.nixpkgs.lib;
-      recoveryModule = {
-        key = "${primitives.outPath}#nixosModules.recovery";
-        imports = [ primitives.nixosModules.recovery ];
-      };
+      # Supported component cohort of this same Primitives artifact's module.
+      couchdbErlangFor =
+        system: primitives.inputs.nixpkgs.legacyPackages.${system}.beamMinimalPackages.erlang;
     in
     {
       clan.modules = {
         "@clanwright/apps-obsidian" = lib.modules.importApply ./clanServices/obsidian/default.nix {
-          inherit lib;
+          inherit lib couchdbErlangFor;
           couchdbModule = primitives.nixosModules.couchdb;
-          inherit recoveryModule;
-          recoveryToolsFor = system: primitives.lib.mkRecoveryTools { inherit system; };
-          appsPkgsFor = system: import apps-nixpkgs { inherit system; };
+          recoveryToolsFor = pkgs: primitives.lib.mkRecoveryTools { inherit pkgs; };
         };
         "@clanwright/apps-vaultwarden" = lib.modules.importApply ./clanServices/vaultwarden/default.nix {
           inherit lib;
           postgresqlModule = primitives.nixosModules.postgresql;
-          inherit recoveryModule;
-          recoveryToolsFor = system: primitives.lib.mkRecoveryTools { inherit system; };
+          recoveryToolsFor = pkgs: primitives.lib.mkRecoveryTools { inherit pkgs; };
           appsPkgsFor = system: import apps-nixpkgs { inherit system; };
         };
       };
@@ -60,7 +56,7 @@
           self
           clan-core
           primitives
-          apps-nixpkgs
+          couchdbErlangFor
           ;
       };
       checks.aarch64-linux.recovery-runtime = import ./checks/recovery-runtime.nix {
@@ -68,23 +64,11 @@
           self
           clan-core
           primitives
-          apps-nixpkgs
+          couchdbErlangFor
           ;
         system = "aarch64-linux";
       };
       checks.aarch64-linux.export-tools = import ./checks/export/check.nix {
-        pkgs = import apps-nixpkgs { system = "aarch64-linux"; };
-      };
-      checks.aarch64-linux.export-runtime = import ./checks/export-runtime.nix {
-        inherit
-          self
-          clan-core
-          network
-          apps-nixpkgs
-          ;
-        system = "aarch64-linux";
-      };
-      checks.aarch64-linux.validator-isolation = import ./checks/validate {
         pkgs = import apps-nixpkgs { system = "aarch64-linux"; };
       };
     };

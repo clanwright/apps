@@ -1,6 +1,6 @@
 # Clanwright Apps
 
-Declarative Clan recipes for Obsidian LiveSync and Vaultwarden. The public `clanModules.default` module selects apps by machine and contributes ordinary Clan inventory instances. The recipes use [Primitives v0.2.1](https://github.com/clanwright/primitives/releases/tag/v0.2.1) for CouchDB and PostgreSQL, and [Network v4.1.0](https://github.com/clanwright/network/releases/tag/v4.1.0) for certificates, Caddy, firewall, and private ingress protection. They do not provision DNS, ACME provider credentials, SOPS values, or Tailscale enrollment.
+Declarative Clan recipes for Obsidian LiveSync and Vaultwarden. The public `clanModules.default` module selects apps by machine and contributes ordinary Clan inventory instances. The recipes use the public Primitives database/recovery SDK and Network native NixOS interfaces for certificates, Caddy, firewall, and private ingress protection. They do not provision DNS, ACME provider credentials, SOPS values, or Tailscale enrollment.
 
 ## Public interface
 
@@ -21,30 +21,60 @@ clanwright.apps.machines.server = {
 };
 ```
 
-`obsidian` and `vaultwarden` are independently nullable and default to `null`. Each selected app defaults to `lifecycle = "enabled"`; `lifecycle = "disabled-retained"` keeps declared state and secret metadata while removing runtime and ingress requests. Setting an app back to `null` withdraws its declarations and does not itself prune or restore data. A retained-only machine needs no `installation` context. An active Obsidian selection needs public IPv4 and certificate email; it does not need private ingress. Active Vaultwarden also requires private ingress with a distinct destination IPv4. Both listeners use port 443 with one hostname; public `/admin` responds 404, while private admin routes bind only the declared private IPv4. The Vaultwarden recipe opens TCP 443 globally and on `tailscale0`. Network guards the private destination for the declared interfaces, with loopback implicitly trusted; its private ingress claim grants no port. This contract does not enroll a device in Tailscale.
+`obsidian` and `vaultwarden` are independently nullable and default to `null`. Each selected app defaults to `lifecycle = "enabled"`; `lifecycle = "disabled-retained"` keeps declared state and secret metadata while removing runtime and ingress requests. Setting an app back to `null` withdraws its declarations and does not itself prune or restore data. A retained-only machine needs no `installation` context. An active Obsidian selection needs public IPv4 and certificate email; it does not need private ingress. Active Vaultwarden also requires private ingress with a distinct destination IPv4. Both listeners use port 443 with one hostname; public `/admin` responds 404, while private admin routes bind only the declared private IPv4. The recipes open TCP 443 globally; they do not force an interface-specific port rule. Network guards the private destination for the declared interfaces, with loopback implicitly trusted; its private ingress claim grants no port. Private ingress is a generic IPv4/interface contract; the example uses `tailscale0`, but Apps neither enrolls a device nor supplies a Tailscale readiness mechanism.
 
-Obsidian accepts `domain`, optional `adminConfigSecretName` (default `obsidian-admin-ini`), `lifecycle`, and `export.enable` (default false). Vaultwarden accepts `domain`, optional `adminTokenSecretName` (default `vaultwarden-admin-token`), `lifecycle`, `export.enable` (default false), `registration.open` (default false), `fail2ban.ignoreIPs` (default empty), and `logLevel` (default `warn`). Secret names refer to existing SOPS bindings; no value is created or read by this module. Database names, users, backend ports, package versions, ACME certificate names, and Network instances are recipe owned.
+Both apps accept `domain`, optional `certificateId` (default `null`, using the canonical app domain), `lifecycle`, and `export.enable` (default false). Supply an existing physical certificate ID explicitly to preserve its identity when upgrading. Obsidian additionally accepts `adminConfigSecretName` (default `obsidian-admin-ini`). Vaultwarden accepts `adminTokenSecretName` (default `vaultwarden-admin-token`), `registration.open` (default false), `fail2ban.ignoreIPs` (default empty), and `logLevel` (default `warn`; allowed values are `trace`, `debug`, `info`, `warn`, `error`). Error logging cannot be disabled because authentication Fail2ban depends on it. Secret names refer to existing SOPS bindings; this module creates or reads no secret value. Vaultwarden's database and user are fixed as `vaultwarden`; backend ports and package selection are recipe owned.
 
-The app instances are `<machine>--app-obsidian` and `<machine>--app-vaultwarden`, with public service names `@clanwright/apps-obsidian` (`server`) and `@clanwright/apps-vaultwarden` (`app`). Active selections request the shared instances `<machine>--network-certificates`, `<machine>--network-caddy`, and `<machine>--network-firewall`. The same IDs are intended to compose with a consumer's existing core profile. The exported `packages.x86_64-linux.vaultwarden` is the package used by the Vaultwarden recipe; no other platform package export is promised.
+The app instances are `<machine>--app-obsidian` and `<machine>--app-vaultwarden`, with public service names `@clanwright/apps-obsidian` (`server`) and `@clanwright/apps-vaultwarden` (`app`). Active selections request shared `<machine>--network-certificates`, `<machine>--network-caddy`, and `<machine>--network-firewall` instances. Apps contributes their role membership without shared profile settings. The consumer owns those settings and binds the public `apps` and `network` inputs. The exported `packages.x86_64-linux.vaultwarden` is the package used by the recipe; no other platform package export is promised.
 
-This is a breaking Obsidian recipe rename from v0.1.0. Before updating a consumer, change any direct service reference from `@clanwright/apps-livesync-couchdb` to `@clanwright/apps-obsidian` and its inventory instance from `<machine>--app-livesync-couchdb` to `<machine>--app-obsidian`; keep the `server` role. The CouchDB state declaration changes from `livesync-couchdb` to `obsidian`, but its data directory remains `/var/lib/couchdb`. Update any backup or recovery configuration that names the old state declaration, and verify it still covers that directory. The default SOPS secret name changes from `livesync-couchdb-admin-ini` to `obsidian-admin-ini`: provide the existing administrator INI content under the new name before enabling the new recipe, or explicitly set `adminConfigSecretName` to an already provisioned name. The Caddy access log moves from `/var/log/caddy/livesync-couchdb-access.log` to `/var/log/caddy/obsidian-access.log`; historical logs stay at the old path. This module does not migrate state or secret values.
+Recipes declare `services.caddy.virtualHosts.<domain>` with explicit listener addresses, `useACMEHost`, and app routes; `security.acme.certs.<certificateId>` with domain, per-certificate email and ACME group; and Vaultwarden's `networking.firewall.privateIngress.<instanceName>`. Network owns the private guard. Its claim grants no port. Certificate challenges default to `null`: the consumer must supply the appropriate per-certificate challenge configuration through Network's public interface. The consuming host's native ACME module and stock host Lego own issuance and migration. Apps does not override the host ACME package or require per-app Caddy access logs.
 
-The lock pins Clan `c612dac4b2bfb5278b7c366f250044ddb5401bcb`, Primitives `77e744cadad532e8458b19a8df71a97794434bf7`, Network `a216e7b311c2f2e36fa0e0ee137c867acb04a54e`, and Apps nixpkgs `8d5d270900d3fc75655ea2d9d248b234f6631439`. External inputs retain their own dependency locks; Apps does not override their follows. Apps nixpkgs supplies Vaultwarden 1.37.3. Primitives v0.2.1 supplies CouchDB 3.5.2 and PostgreSQL 18.6. Network owns its Caddy package, and the standalone check tools come from Clan's nixpkgs. Shared Caddy and Firewall instances declare role membership while their settings remain with the consumer's core profile. Apps supplies a default certificate email; a conflicting effective email fails a machine assertion. The app recipes independently contribute their HTTPS port and route claims through native NixOS and Network options.
+Vaultwarden uses the stock Fail2ban Vaultwarden filter with a native systemd journal backend and `vaultwarden-auth` jail. Caddy overwrites `X-Real-IP` with the actual peer address on every proxy path; Vaultwarden trusts this header only from its loopback proxy. Apps adds no `tailscaled` readiness dependency. When private-address readiness is required, the consumer attaches `access.lib.tailscaleReadyGate { pkgs; ipv4; interface; }` to ordinary native Caddy `ExecStartPre`, using the selected private listener IPv4 and effective `services.tailscale.interfaceName`. Effective `services.tailscale.package` must be Access's exported package; caller `pkgs` supplies support tools. There is no privileged prefix, sandbox relaxation, per-reload gate or watcher. Verify the native consumer behavior against the [recovery acceptance boundary](docs/recovery.md#acceptance-boundary).
 
-## Dependency migration
+When a consumer shares a public listener with VPN's native CONNECT proxy, it explicitly prepends the same complete exported policy to each app's existing named site that can match a CONNECT target authority:
 
-Adopting these dependencies is a breaking upgrade for existing consumers:
+```nix
+services.caddy.virtualHosts."obsidian.example.invalid".extraConfig =
+  lib.mkBefore config.clanwright.vpn.naiveproxy.connectRoute;
+```
 
-- Primitives v0.2.0 selects PostgreSQL 18 instead of 17. Before activating an existing Vaultwarden installation, plan and test a major-version migration with `pg_upgrade` or a logical dump/restore. Preserve the old pinned configuration and compatible recovery tooling until the migrated application and historical backups are accepted. Do not start PostgreSQL 18 against a PostgreSQL 17 data directory. Updating Apps does not perform this migration. See the [Primitives migration contract](https://github.com/clanwright/primitives/blob/v0.2.1/README.md#postgresql-major-version-migration).
-- Network v3.0.1 and later select Lego 5. The consuming host's native NixOS ACME module must support Lego 5 commands and Lego 4 account migration; changing only the Network or Apps pin is insufficient. Network verifies compatibility for every certificate on the host, including native certificates outside Apps. Network's verified nixpkgs baseline is `8d5d270900d3fc75655ea2d9d248b234f6631439`. See the [Network adoption contract](https://github.com/clanwright/network/blob/v4.1.0/docs/operations/release.md#consumer-adoption).
-- Network v4.0.0 replaces the `@clanwright/network-wan-static` `secondaryIPv4`, `routeTableName`, `routeTableId` and `rulePriority` settings with an `additionalIPv4s` list. Apps does not use static WAN, but consumers that do and share the coordinated Network pin must migrate those settings before adopting this Apps release. See the [Network version 4 migration](https://github.com/clanwright/network/blob/v4.0.0/docs/operations/release.md#version-4-migration).
+Do the same for the selected Vaultwarden hostname on that listener. Keep the existing owner, aliases, listener addresses and certificate; do not repeat the catch-all attachment or set `forwardProxy` on an ordinary app site. The full fragment retains its CONNECT and actual public-bind443 guard, authentication and ACL, including exclusion of private binds. Named terminal Host routes can shadow the catch-all even when its inner policy is first; matching canonical and alias target authorities need the affected native composition controls. Apps does not enumerate or attach other consumers' sites.
 
-Service names, routes, state declarations and secret names are unchanged by this dependency refresh.
+The lower-level Clan roles expose `certificateEmail` and `ingress.publicIPv4`; Vaultwarden additionally exposes `ingress.privateIPv4` and `ingress.trustedInterfaces`. Normal selection uses `installation.privateIngress.destinationIPv4` and `trustedInterfaces`; the composition module maps these to the role settings. State, secret names, service identities and routes remain stable. Apps performs no automatic state, secret or database migration. Required operator migrations are documented in [recovery compatibility](docs/recovery.md#lifecycle-historical-backups-and-migration).
+
+## Dependencies and migration
+
+`flake.nix` declares immutable producer revisions; `flake.lock` records the resolved
+graph. Apps uses these authorities without overriding their internal follows:
+
+| Input | Responsibility |
+| --- | --- |
+| `clan-core` | Clan inventory/module composition and its caller Nixpkgs glue |
+| `apps-nixpkgs` | Vaultwarden package (1.37.3), also exported as `packages.x86_64-linux.vaultwarden` |
+| `primitives` | Native PostgreSQL/CouchDB modules and package-valued recovery SDK; effective database packages supply their own executables/configuration, with explicit same-Primitives Erlang for the default CouchDB component cohort |
+| `network` | Specialized Caddy package, native certificate/firewall composition and private ingress guard |
+
+The consuming host's native ACME module and stock Lego remain the issuance
+and migration authority. Apps does not unify these package cohorts. Access startup readiness and VPN
+CONNECT policy are optional consumer integrations. See
+[recovery package authority](docs/recovery.md#public-boundary) for supported
+database components and overrides. Releases must pin compatible published
+Primitives and Network interfaces and pass the normal published-input gates
+below; temporary input overrides do not establish a shipped dependency graph.
+
+Existing PostgreSQL 17 installations require a separately planned and tested
+major-version migration using `pg_upgrade` or logical dump/restore. Do not start
+PostgreSQL 18 against a PostgreSQL 17 directory. Keep the previous pinned
+configuration and compatible validator closures until the migrated application
+and backups are accepted. Updating Apps performs no migration. Consult the
+Primitives migration contract at the revision you adopt and
+[recovery compatibility](docs/recovery.md#lifecycle-historical-backups-and-migration).
+The [v1.0.0 release overview](CHANGELOG.md) describes the supported capabilities and their purpose.
 
 ## Application recovery
 
-For native Restic integration, opt in to completed local exports independently
-on each selected recipe:
+Opt in independently on each selected app, keeping its domain and installation
+settings:
 
 ```nix
 clanwright.apps.machines.server = {
@@ -53,90 +83,67 @@ clanwright.apps.machines.server = {
 };
 ```
 
-Keep the usual domain and installation settings. An active, opted-in recipe adds
-an unscheduled `apps-export-vaultwarden.service` or `apps-export-livesync.service`.
-Start it explicitly or supply a consumer-owned timer. Neither recipe enablement
-nor export enablement starts a capture, timer or upload automatically.
+An active opted-in recipe provides an unscheduled native capture service and
+`config.system.build.appsVaultwardenExport` or `appsLiveSyncExport`. Their public
+commands prepare an independent reader with an explicit capture-age limit and
+validate separately restored data using a retained matching closure. The
+consumer, such as [Clanwright Reliability](https://github.com/clanwright/reliability),
+owns native Restic jobs, reader lifetime, scheduling, destinations and retention.
+Apps has no Restic/provider dependency or generic backup-job constructor.
 
-The machine outputs `config.system.build.appsVaultwardenExport` and
-`config.system.build.appsLiveSyncExport` provide `bin/prepare-reader --max-age
-SECONDS ABSOLUTE_EMPTY_DIRECTORY` and `bin/validate ABSOLUTE_RESTORED_DIRECTORY`.
-Prepare a separate private copy for each native Restic job; upload reads that
-copy without holding the export lock. A failed new capture preserves the last
-complete export, but readers reject it once its original capture age exceeds
-their explicit limit. Upload time never resets capture time.
+[Recovery](docs/recovery.md) is the canonical contract for service names, paths,
+atomic publication, failure handling, age, privileges, resource/storage budgets,
+semantic validation and historical compatibility. Consult it before integrating
+backup jobs or invoking validation on an existing application host.
 
-Import the [native Restic example](examples/native-restic.nix) into the consuming
-machine's NixOS configuration for four independent manual jobs: each app to two
-destinations. The consumer supplies repository/password files, capture and
-upload schedules, retention and age/deadline policy. Apps has no Restic/provider
-dependency. Published roots are declared as native state; raw roots and the
-`current` pointer are not direct backup inputs. See the exact paths, privileges,
-cleanup and historical validation contract in [Recovery](docs/recovery.md).
+## Verification and release acceptance
 
-`disabled-retained` keeps opted-in export state while withdrawing runnable export
-units and command outputs. Turning exports off or withdrawing the app performs
-no filesystem deletion. Preserve compatible validator closures separately before
-changing the selection or upgrading database versions.
+Apps declares host state and recovery commands. Evaluation and tests do not
+activate machines, mutate providers/DNS, create secret values or initiate backup
+operations. Release acceptance requires independent review, standalone composition,
+the applicable native check builds, and fresh consumer locking against the final
+published dependency graph. Retain readable output, input/source identities and
+durations under ignored `state/`.
 
-Run updated retained validation commands as root on the existing application
-host or a separate Linux host, with its local systemd manager and cgroup v2
-CPU/memory/PID controllers. The wrapper limits resources and admits one validation
-at a time across both applications; provision isolated scratch capacity under
-`/var/tmp`. It validates only a separately restored copy. Applications continue
-running. Confirmed teardown permits cleanup without a reboot; uncertain teardown
-retains scratch and requires operator recovery. See the exact supported envelope
-and failure procedure in [Recovery](docs/recovery.md#validation-on-an-existing-application-host).
-The v0.4.0 wrapper retains its original disposable-host contract; same-host use
-requires retaining the updated closure, not only changing invocation instructions.
+| Ordinary check output | Evidence |
+| --- | --- |
+| `checks.x86_64-linux.contract` | Standalone Clan lifecycle, package authority, database declarations and shared Network composition |
+| `checks.x86_64-linux.http-runtime` | Local Caddy/backend route and proxy-header fixture |
+| `checks.x86_64-linux.recovery-runtime` | Disposable capture/import and semantic validation |
+| `checks.aarch64-linux.recovery-runtime` | Native architecture variant of the same recovery fixture |
+| `checks.aarch64-linux.export-tools` | Reader, retained-validator and native export stage builds |
 
-### Existing command interface
-
-Enabled recipes publish `clanwright.recovery.units.vaultwarden` and
-`clanwright.recovery.units.livesync` through the
-[Primitives v0.2.1 recovery contract](https://github.com/clanwright/primitives/blob/v0.2.1/docs/recovery.md).
-The `livesync` recovery ID is stable even though the recipe and native state are
-named `obsidian`. Both units use `contractVersion = 1`. Vaultwarden groups native
-`vaultwarden-app` and `<database-name>-db` state; LiveSync refers to `obsidian`.
-Native Clan state remains the only folder registry.
-
-An executor selects these IDs and invokes the declared commands; consumers do
-not repeat application paths, database commands or semantic checks. Declaring
-the units does not enable transmission, schedules, destinations or retention.
-Apps has no dependency on Reliability or a backup provider.
-
-`disabled-retained` withdraws recovery units and runtime/network claims while
-preserving state and secret metadata. A `null` selection withdraws declarations.
-Neither transition deletes local data or historical backups. Executors must
-reject a selected missing unit. Before changing a pin or disabling/removing an
-app, retain its pinned configuration and validator closures in a separate
-recovery environment; the current host configuration is not an archive of old
-handlers. Keep the matching database and application versions with those
-closures. Restoring old data is not a reason to re-enable production services.
-
-The command and artifact compatibility details are in [Recovery](docs/recovery.md).
-
-## Limits and verification
-
-The module declares host state and recovery commands. It does not activate machines, change providers or DNS, create secret values, or initiate backup operations. The standalone contract check evaluates isolated Clan compositions, including compatible core profile settings, lifecycle, package authority, private guard, and route behavior. It checks Vaultwarden's PostgreSQL declaration, local socket URL, backend selection, systemd dependencies and recovery-unit declarations. Primitives owns database service readiness mechanics; evaluation does not start Vaultwarden or prove its database connection. The HTTP fixture runs a local Caddy/backend simulation without a real database. The recovery runtime fixture exercises disposable database capture/import and semantic checks, failure cleanup and validation isolation. These checks do not prove production DNS, certificates, firewall packet behavior, live application traffic, or the consuming executor's privileged handoff. Consumer adoption and deployment require their own acceptance checks.
-
-### Release acceptance
-
-Release acceptance requires both standalone checks and fresh nested-consumer locking against the same published revision. With Nix, Bash, and Python 3 available, run from this checkout:
+The focused LiveSync callback regression uses Bash, jq, awk and sed, with no
+CouchDB process or VM. It runs the actual callback across three pages, escaped
+cursors, payload reduction, conflicting revisions and malformed-response cases:
 
 ```sh
-mkdir -p state
-nix build --no-link \
-  github:clanwright/apps/REVISION#checks.x86_64-linux.contract \
-  github:clanwright/apps/REVISION#checks.x86_64-linux.http-runtime \
-  github:clanwright/apps/REVISION#checks.aarch64-linux.recovery-runtime \
-  github:clanwright/apps/REVISION#checks.aarch64-linux.export-tools \
-  github:clanwright/apps/REVISION#checks.aarch64-linux.validator-isolation \
-  github:clanwright/apps/REVISION#checks.aarch64-linux.export-runtime \
-  > state/release-standalone.log 2>&1
-bash checks/consumer-lock.sh github:clanwright/apps/REVISION /path/to/existing-consumer/flake.lock
+bash checks/recovery/livesync-pagination.sh state/livesync-pagination
 ```
 
-Replace the reference in both commands with the exact candidate revision being accepted. Supply a preserved existing consumer lock with its sibling `flake.nix` as the second gate argument to test ordinary coordinated upgrades as well as fresh adoption; the script copies it into an isolated fixture and does not modify the original. Omitting that argument runs only fresh adoption, which is insufficient for release upgrade acceptance. Composition and HTTP builds need an `x86_64-linux` builder. Run the complete recovery suite on a native supported Linux builder: the example uses ARM; substitute `checks.x86_64-linux.recovery-runtime` when using native x86. The x86-emulated runtime check is not a release gate. See the [runtime acceptance boundary](docs/recovery.md#acceptance-boundary), including the current x86-emulation limitation. The consumer gate only evaluates; it must start without a consumer lock, generate one normally, preserve the published dependency source identities and relative source anchors, evaluate the Apps contract, and rerun locking without byte changes. Its isolated fixtures and readable logs are retained under ignored `state/`. A successful standalone check does not waive a failing consumer gate.
+Run recovery-runtime on a builder's native supported architecture. Emulated or
+unavailable execution is not native runtime PASS. The checks' exact scope and
+one canonical **PREDEPLOY / NOT OBSERVED** boundary are in
+[recovery acceptance](docs/recovery.md#acceptance-boundary). Release publication
+and ordinary process checks do not close those runtime criteria.
 
-Apps v0.3.1 adopts Network v3.0.1 to remove the nested relative-input locking blocker affecting earlier Apps releases. Consumers with direct Network and Primitives inputs must update the coordinated pins together using ordinary `nix flake update apps network primitives`; the root and Apps-owned sources must converge. No copied stubs, consumer overrides, manual lock reconstruction or custom Nix are needed. See [consumer locking acceptance and historical diagnosis](docs/nested-consumer-locking.md). The database and ACME migration requirements above still apply when upgrading from older releases.
+Run the consumer gate against the exact immutable Apps release candidate, with
+its compatible published producer pins:
+
+```sh
+bash checks/consumer-lock.sh github:clanwright/apps/REVISION
+```
+
+It covers Apps-only and coordinated fresh locking, a representative coordinated
+upgrade, native resolved-source convergence, contract evaluation and identical
+relocking. Its optional second argument selects an immutable public baseline;
+see [consumer locking](docs/nested-consumer-locking.md). A standalone check does
+not waive a failing consumer gate or establish arbitrary consumer compatibility.
+
+## Documentation
+
+- [Recovery](docs/recovery.md): native exports, readers, retained validation and acceptance limits.
+- [Consumer locking](docs/nested-consumer-locking.md): release dependency gate and evidence.
+- [Obsidian role](clanServices/obsidian/README.md) and [Vaultwarden role](clanServices/vaultwarden/README.md): recipe state, database and route details.
+- [Recovery language and decisions](CONTEXT.md): glossary and immutable ADR index.
+- [v1.0.0 release overview](CHANGELOG.md): current capabilities, contracts and rationale.

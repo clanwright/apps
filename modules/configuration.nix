@@ -9,10 +9,6 @@ let
     types
     ;
   cfg = config.clanwright.apps;
-  lifecycleType = types.enum [
-    "enabled"
-    "disabled-retained"
-  ];
   privateType = types.submodule {
     options = {
       destinationIPv4 = mkOption {
@@ -33,7 +29,7 @@ let
       };
       certificateEmail = mkOption {
         type = types.str;
-        description = "ACME account email for the shared Network certificates instance.";
+        description = "ACME account email declared on each active app certificate.";
       };
       privateIngress = mkOption {
         type = types.nullOr privateType;
@@ -43,66 +39,15 @@ let
     };
   };
   obsidianType = types.submodule {
-    options = {
-      domain = mkOption {
-        type = types.str;
-        description = "Public Obsidian LiveSync domain.";
-      };
-      adminConfigSecretName = mkOption {
-        type = types.str;
-        default = "obsidian-admin-ini";
-        description = "Existing SOPS administrator INI secret name.";
-      };
-      lifecycle = mkOption {
-        type = lifecycleType;
-        default = "enabled";
-      };
-      export.enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Provide a manually callable native LiveSync export.";
-      };
+    options = import ./app-options.nix {
+      inherit lib;
+      app = "obsidian";
     };
   };
   vaultwardenType = types.submodule {
-    options = {
-      domain = mkOption {
-        type = types.str;
-        description = "Public Vaultwarden domain.";
-      };
-      adminTokenSecretName = mkOption {
-        type = types.str;
-        default = "vaultwarden-admin-token";
-        description = "Existing SOPS admin token secret name.";
-      };
-      lifecycle = mkOption {
-        type = lifecycleType;
-        default = "enabled";
-      };
-      export.enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Provide a manually callable native Vaultwarden export.";
-      };
-      registration.open = mkOption {
-        type = types.bool;
-        default = false;
-      };
-      fail2ban.ignoreIPs = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-      };
-      logLevel = mkOption {
-        type = types.enum [
-          "trace"
-          "debug"
-          "info"
-          "warn"
-          "error"
-          "off"
-        ];
-        default = "warn";
-      };
+    options = import ./app-options.nix {
+      inherit lib;
+      app = "vaultwarden";
     };
   };
   machineType = types.submodule {
@@ -136,7 +81,6 @@ let
     };
     roles.${role}.machines.${machine} = { inherit settings; };
   };
-  certName = domain: lib.replaceStrings [ "." ] [ "-" ] domain;
   requireInstallation =
     machine: installation:
     if installation == null then
@@ -185,7 +129,7 @@ let
           requireDistinct machine installation (requirePrivate machine installation)
         else
           null;
-      tailnetIPv4 =
+      privateIPv4 =
         if vaultwardenActive then
           requireIPv4 machine "installation.privateIngress.destinationIPv4" private.destinationIPv4
         else
@@ -193,11 +137,7 @@ let
     in
     mkMerge [
       (mkIf anyActive {
-        "${machine}--network-certificates" = networkInstance "network-certificates" "server" machine (
-          lib.mkDefault {
-            email = installation.certificateEmail;
-          }
-        );
+        "${machine}--network-certificates" = networkInstance "network-certificates" "server" machine null;
         "${machine}--network-caddy" = networkInstance "network-caddy" "ingress" machine null;
         "${machine}--network-firewall" = networkInstance "network-firewall" "host" machine null;
       })
@@ -205,11 +145,12 @@ let
         "${machine}--app-obsidian" = appInstance "obsidian" "server" machine {
           inherit (obsidian)
             domain
+            certificateId
             adminConfigSecretName
             lifecycle
             export
             ;
-          acme.certName = if obsidianActive then certName obsidian.domain else null;
+          certificateEmail = if obsidianActive then installation.certificateEmail else null;
           ingress.publicIPv4 = if obsidianActive then publicIPv4 else null;
         };
       })
@@ -217,6 +158,7 @@ let
         "${machine}--app-vaultwarden" = appInstance "vaultwarden" "app" machine {
           inherit (vaultwarden)
             domain
+            certificateId
             adminTokenSecretName
             lifecycle
             export
@@ -224,10 +166,10 @@ let
             fail2ban
             logLevel
             ;
-          acme.certName = if vaultwardenActive then certName vaultwarden.domain else null;
+          certificateEmail = if vaultwardenActive then installation.certificateEmail else null;
           ingress = {
             publicIPv4 = if vaultwardenActive then publicIPv4 else null;
-            inherit tailnetIPv4;
+            inherit privateIPv4;
             trustedInterfaces = if vaultwardenActive then private.trustedInterfaces else [ ];
           };
         };
@@ -241,28 +183,4 @@ in
     description = "Per-machine Obsidian and Vaultwarden intent; null withdraws an app, disabled-retained preserves its state.";
   };
   config.inventory.instances = mkMerge (lib.mapAttrsToList instancesFor cfg.machines);
-  config.machines = mkMerge (
-    lib.mapAttrsToList (
-      machine: selection:
-      let
-        active =
-          (selection.obsidian != null && selection.obsidian.lifecycle == "enabled")
-          || (selection.vaultwarden != null && selection.vaultwarden.lifecycle == "enabled");
-      in
-      mkIf active {
-        ${machine}.imports = [
-          ({ config, ... }: {
-            assertions = [
-              {
-                assertion =
-                  selection.installation.certificateEmail != ""
-                  && config.security.acme.defaults.email == selection.installation.certificateEmail;
-                message = "Apps ${machine}: effective Network certificate email must match installation.certificateEmail";
-              }
-            ];
-          })
-        ];
-      }
-    ) cfg.machines
-  );
 }

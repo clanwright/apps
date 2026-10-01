@@ -2,6 +2,10 @@
 
 Status: accepted and implemented for v0.4.0; disposable runtime acceptance passed.
 
+This status describes the historical revision. Current source verification and
+mandatory unobserved PREDEPLOY coverage follow
+[ADR 0004](0004-source-and-predeployment-acceptance.md).
+
 For [Apps #4](https://github.com/clanwright/apps/issues/4), Apps publishes
 completed application exports and give each independent backup reader its own
 private local copy. A reader holds the publication lock only while obtaining its
@@ -15,8 +19,10 @@ schedules, maximum acceptable capture age and retention. Merely enabling an app
 does not start exports or uploads. This design does not introduce a generic
 backup executor or a generation retention registry.
 
-An unsuccessful capture preserves the last successfully published export and
-reports the new failure separately. Readers may reuse that export only within
+Every precommit failure preserves the last successfully published export and
+reports the new failure separately. A completed atomic publication remains
+selected after late cancellation or unit failure, without rollback. Readers may
+reuse that export only within
 the consumer's explicit maximum capture age. Export identity and capture time
 remain unchanged on retries and uploads; upload success never implies a new
 application recovery point.

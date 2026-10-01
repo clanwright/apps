@@ -2,14 +2,14 @@
 # Fast callback regression; no CouchDB process, restored data, or VM required.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
-artifact=${1:-"$root/state/issue-5-followup/apps-pagination"}
+artifact=${1:-"$root/state/livesync-pagination"}
 mkdir -p "$artifact"
 artifact=$(cd "$artifact" && pwd)
 work=$(mktemp -d "$artifact/fixture.XXXXXX")
 
 # Exercise the actual callback rather than a duplicate implementation.
-awk '/      text = '\'''\''/ { if (!started) { started = 1; next } }
-  started && /      '\'''\'';/ { exit }
+awk '/^[[:space:]]*text = '\'''\''/ { if (!started) { started = 1; next } }
+  started && /^[[:space:]]*'\'''\'';/ { exit }
   started { print }' "$root/recovery/livesync.nix" \
   | sed "s|/tmp/livesync-|$work/livesync-|g; s|''\${|\${|g" > "$work/callback.sh"
 test -s "$work/callback.sh"

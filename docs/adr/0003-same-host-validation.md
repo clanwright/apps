@@ -3,6 +3,12 @@
 Status: accepted and implemented for Apps issue #5 in v0.5.0; standalone
 acceptance passed.
 
+The dated acceptance below is historical. The VM fixtures were retired during
+the 2026-09-30 refactor. Current source/build verification and mandatory,
+unobserved native PREDEPLOY cases follow
+[ADR 0004](0004-source-and-predeployment-acceptance.md); historical fixture
+success does not certify a changed implementation.
+
 The existing namespace sandbox already keeps the application validator away
 from live state, service sockets, credentials and external networking. Its
 v0.4.0 wrapper nevertheless requires a disposable host: preparation is outside

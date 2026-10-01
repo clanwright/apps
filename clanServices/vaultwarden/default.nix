@@ -1,8 +1,7 @@
 {
-  appsPkgsFor ? (_system: throw "vaultwarden requires an explicit appsPkgsFor dependency"),
+  appsPkgsFor,
   lib,
   postgresqlModule,
-  recoveryModule,
   recoveryToolsFor,
   ...
 }:
@@ -19,91 +18,33 @@
     interface =
       { lib, ... }:
       {
-        options = {
-          domain = lib.mkOption {
-            type = lib.types.str;
-            description = "Public domain for Vaultwarden.";
-          };
-
-          acme.certName = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "ACME certificate profile name used by Caddy.";
-          };
-
-          ingress = {
-            publicIPv4 = lib.mkOption {
+        options =
+          (import ../../modules/app-options.nix {
+            inherit lib;
+            app = "vaultwarden";
+          })
+          // {
+            certificateEmail = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
-              description = "Public IPv4 address where Caddy accepts Vaultwarden traffic.";
+              description = "ACME account email for this app certificate.";
             };
-            tailnetIPv4 = lib.mkOption {
+            ingress.publicIPv4 = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
-              description = "Tailnet IPv4 address where Caddy serves Vaultwarden admin paths.";
+              description = "Public IPv4 address where Caddy accepts app traffic.";
             };
-            trustedInterfaces = lib.mkOption {
+            ingress.privateIPv4 = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Private IPv4 address where Caddy serves Vaultwarden admin paths.";
+            };
+            ingress.trustedInterfaces = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
               description = "Interfaces trusted for the private ingress destination.";
             };
           };
-
-          registration.open = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Whether public signup is enabled.";
-          };
-
-          fail2ban.ignoreIPs = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Addresses exempted from the Vaultwarden authentication jail.";
-          };
-
-          adminTokenSecretName = lib.mkOption {
-            type = lib.types.str;
-            default = "vaultwarden-admin-token";
-            description = "SOPS secret name that provides ADMIN_TOKEN via environment file.";
-          };
-
-          lifecycle = lib.mkOption {
-            type = lib.types.enum [
-              "enabled"
-              "disabled-retained"
-            ];
-            default = "enabled";
-            description = "Whether Vaultwarden runtime owners are active or retained for recovery.";
-          };
-          export.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Provide a manually callable native Vaultwarden export.";
-          };
-
-          database = {
-            name = lib.mkOption {
-              type = lib.types.str;
-              default = "vaultwarden";
-            };
-            user = lib.mkOption {
-              type = lib.types.str;
-              default = "vaultwarden";
-            };
-          };
-
-          logLevel = lib.mkOption {
-            type = lib.types.enum [
-              "trace"
-              "debug"
-              "info"
-              "warn"
-              "error"
-              "off"
-            ];
-            default = "warn";
-          };
-        };
       };
 
     perInstance =
@@ -120,110 +61,111 @@
             ...
           }:
           let
-            system =
-              if pkgs ? stdenv && pkgs.stdenv ? hostPlatform && pkgs.stdenv.hostPlatform ? system then
-                pkgs.stdenv.hostPlatform.system
-              else
-                builtins.currentSystem;
+            system = pkgs.stdenv.hostPlatform.system;
             appsPkgs = appsPkgsFor system;
-            recoveryTools = recoveryToolsFor system;
+            recoveryTools = recoveryToolsFor pkgs;
             vaultwardenHost = "127.0.0.1";
             vaultwardenPort = 8222;
             vaultwardenBackend = "${vaultwardenHost}:${toString vaultwardenPort}";
             active = settings.lifecycle == "enabled";
             exportEnabled = settings.export.enable;
-            recoveryUnit = import ../../recovery/vaultwarden.nix {
+            producer = import ../../recovery/vaultwarden.nix {
               inherit
                 lib
                 pkgs
                 config
-                settings
-                appsPkgs
                 ;
               tools = recoveryTools;
             };
             exportFactory = import ../../recovery/export.nix {
-              inherit lib pkgs;
+              inherit lib pkgs producer;
               id = "vaultwarden";
-              unit = recoveryUnit;
             };
             publicIPv4 =
               if settings.ingress.publicIPv4 == null then
                 throw "Apps Vaultwarden: active installation requires publicIPv4"
               else
                 settings.ingress.publicIPv4;
-            tailnetIPv4 =
-              if settings.ingress.tailnetIPv4 == null then
+            privateIPv4 =
+              if settings.ingress.privateIPv4 == null then
                 throw "Apps Vaultwarden: active installation requires privateIngress.destinationIPv4"
               else
-                settings.ingress.tailnetIPv4;
-            certName =
-              if settings.acme.certName == null then
-                throw "Apps Vaultwarden: active installation requires certificate context"
+                settings.ingress.privateIPv4;
+            certificateId = if settings.certificateId == null then settings.domain else settings.certificateId;
+            certificateEmail =
+              if settings.certificateEmail == null || settings.certificateEmail == "" then
+                throw "Apps: active installation requires certificateEmail"
               else
-                settings.acme.certName;
-            accessLogPath = "/var/log/caddy/vaultwarden-access.log";
-            authFailRegex = ''^.*"remote_ip":"<HOST>".*"method":"(GET|POST)".*"uri":"\/(identity\/(connect\/token|accounts\/prelogin|accounts\/register)|admin).*"status":(401|429).*$'';
+                settings.certificateEmail;
             caddyRoute = ''
-              @tailnetRoot {
-                expression `{http.request.local.host} == "${tailnetIPv4}"`
-                path /
-              }
-              redir @tailnetRoot /admin
+              route {
+                @privateRoot {
+                  expression `{http.request.local.host} == "${privateIPv4}"`
+                  path /
+                }
+                redir @privateRoot /admin
 
-              @tailnetAdmin {
-                expression `{http.request.local.host} == "${tailnetIPv4}"`
-                path /admin /admin/*
-              }
-              route @tailnetAdmin {
-                rate_limit {
-                  zone vaultwarden_auth_admin {
-                    key {remote_host}
-                    events 14
-                    window 1m
+                @privateAdmin {
+                  expression `{http.request.local.host} == "${privateIPv4}"`
+                  path /admin /admin/*
+                }
+                route @privateAdmin {
+                  rate_limit {
+                    zone vaultwarden_auth_admin {
+                      key {remote_host}
+                      events 14
+                      window 1m
+                    }
+                  }
+                  reverse_proxy ${vaultwardenBackend} {
+                    header_up X-Real-IP {remote_host}
                   }
                 }
-                reverse_proxy ${vaultwardenBackend}
-              }
 
-              @tailnetStatic {
-                expression `{http.request.local.host} == "${tailnetIPv4}"`
-                path /vw_static*
-              }
-              reverse_proxy @tailnetStatic ${vaultwardenBackend}
+                @privateStatic {
+                  expression `{http.request.local.host} == "${privateIPv4}"`
+                  path /vw_static*
+                }
+                reverse_proxy @privateStatic ${vaultwardenBackend} {
+                  header_up X-Real-IP {remote_host}
+                }
 
-              @publicAdminPaths {
-                expression `{http.request.local.host} != "${tailnetIPv4}"`
-                path /admin /admin/*
-              }
-              respond @publicAdminPaths 404
+                @publicAdminPaths {
+                  expression `{http.request.local.host} != "${privateIPv4}"`
+                  path /admin /admin/*
+                }
+                respond @publicAdminPaths 404
 
-              @adminPaths path /admin /admin/*
-              respond @adminPaths 404
+                @adminPaths path /admin /admin/*
+                respond @adminPaths 404
 
-              @vaultPaths path /vault /vault/*
-              respond @vaultPaths 404
+                @vaultPaths path /vault /vault/*
+                respond @vaultPaths 404
 
-              @vaultwardenAuth path /identity/connect/token /identity/accounts/prelogin /identity/accounts/register
-              route @vaultwardenAuth {
-                rate_limit {
-                  zone vaultwarden_auth_public {
-                    key {remote_host}
-                    events 14
-                    window 1m
+                @vaultwardenAuth path /identity/connect/token /identity/accounts/prelogin /identity/accounts/register
+                route @vaultwardenAuth {
+                  rate_limit {
+                    zone vaultwarden_auth_public {
+                      key {remote_host}
+                      events 14
+                      window 1m
+                    }
+                  }
+                  reverse_proxy ${vaultwardenBackend} {
+                    header_up X-Real-IP {remote_host}
                   }
                 }
-                reverse_proxy ${vaultwardenBackend}
-              }
 
-              reverse_proxy ${vaultwardenBackend}
+                reverse_proxy ${vaultwardenBackend} {
+                    header_up X-Real-IP {remote_host}
+                  }
+              }
             '';
           in
           lib.recursiveUpdate
             {
               imports = [
                 postgresqlModule
-                recoveryModule
               ];
 
               sops.secrets."${settings.adminTokenSecretName}" = {
@@ -240,102 +182,117 @@
                 apps-export-vaultwarden.folders = [ "/var/lib/clanwright-app-exports/vaultwarden" ];
               };
 
-              services.clanwright.primitives.postgresql.databases."${settings.database.name}" = {
+              services.clanwright.primitives.postgresql.databases.vaultwarden = {
                 inherit (settings) lifecycle;
-                inherit (settings.database) user;
-                stateName = "${settings.database.name}-db";
+                user = "vaultwarden";
+                stateName = "vaultwarden-db";
                 restoreStopUnits = [ "vaultwarden.service" ];
               };
             }
             (
-              lib.optionalAttrs active {
-                clanwright.recovery.units.vaultwarden = recoveryUnit;
-                networkCore = {
-                  caddy.fragments.${instanceName} = {
-                    hostName = settings.domain;
+              lib.recursiveUpdate
+                (lib.optionalAttrs active {
+                  services.postgresql.settings.unix_socket_directories = "/run/postgresql";
+                  assertions = [
+                    {
+                      assertion = config.services.postgresql.settings.unix_socket_directories == "/run/postgresql";
+                      message = "Apps Vaultwarden requires the native PostgreSQL socket at /run/postgresql";
+                    }
+                  ];
+                  security.acme.certs.${certificateId} = {
+                    inherit (settings) domain;
+                    email = certificateEmail;
+                    group = "acme";
+                  };
+                  services.caddy.virtualHosts.${settings.domain} = {
+                    owner = "apps:${instanceName}";
                     listenAddresses = [
                       publicIPv4
-                      tailnetIPv4
+                      privateIPv4
                     ];
-                    useACMEHost = certName;
-                    afterUnits = [
-                      "tailscaled.service"
-                      "tailscaled-autoconnect.service"
-                    ];
-                    wantsUnits = [
-                      "tailscaled.service"
-                      "tailscaled-autoconnect.service"
-                    ];
-                    logFile = accessLogPath;
-                    extraConfig = caddyRoute;
+                    useACMEHost = certificateId;
+                    extraConfig = lib.mkOrder 2000 caddyRoute;
                   };
-                  acme.certificateClaims.${certName} = {
-                    inherit (settings) domain;
-                    extraDomainNames = [ ];
-                  };
-                  firewall.privateIngressClaims.${instanceName} = {
-                    destinationIPv4 = tailnetIPv4;
+                  networking.firewall.privateIngress.${instanceName} = {
+                    destinationIPv4 = privateIPv4;
                     trustedInterfaces = settings.ingress.trustedInterfaces;
                   };
-                };
 
-                services.vaultwarden = {
-                  enable = true;
-                  dbBackend = "postgresql";
-                  configureNginx = false;
-                  package = appsPkgs.vaultwarden;
-                  environmentFile = [ config.sops.secrets."${settings.adminTokenSecretName}".path ];
-                  config = {
-                    DOMAIN = "https://${settings.domain}";
-                    DATABASE_URL = "postgresql:///${settings.database.name}?host=/run/postgresql";
-                    SIGNUPS_ALLOWED = settings.registration.open;
-                    INVITATIONS_ALLOWED = false;
-                    SENDS_ALLOWED = false;
-                    EMERGENCY_ACCESS_ALLOWED = false;
-                    EMAIL_CHANGE_ALLOWED = false;
-                    SHOW_PASSWORD_HINT = false;
-                    WEBSOCKET_ENABLED = true;
-                    ROCKET_ADDRESS = vaultwardenHost;
-                    ROCKET_PORT = vaultwardenPort;
-                    ROCKET_LOG = settings.logLevel;
-                  };
-                };
-
-                services.fail2ban = {
-                  enable = true;
-                  jails.vaultwarden-auth = {
-                    filter.Definition.failregex = authFailRegex;
-                    settings = {
-                      enabled = true;
-                      backend = "auto";
-                      logpath = accessLogPath;
-                      port = "http,https";
-                      protocol = "tcp";
-                      maxretry = 8;
-                      findtime = "10m";
-                      bantime = "1h";
-                    }
-                    // lib.optionalAttrs (settings.fail2ban.ignoreIPs != [ ]) {
-                      ignoreip = lib.concatStringsSep " " settings.fail2ban.ignoreIPs;
+                  services.vaultwarden = {
+                    enable = true;
+                    dbBackend = "postgresql";
+                    configureNginx = false;
+                    package = appsPkgs.vaultwarden;
+                    environmentFile = [ config.sops.secrets."${settings.adminTokenSecretName}".path ];
+                    config = {
+                      DOMAIN = "https://${settings.domain}";
+                      DATABASE_URL = "postgresql:///vaultwarden?host=/run/postgresql&port=${toString config.services.postgresql.settings.port}";
+                      SIGNUPS_ALLOWED = settings.registration.open;
+                      INVITATIONS_ALLOWED = false;
+                      SENDS_ALLOWED = false;
+                      EMERGENCY_ACCESS_ALLOWED = false;
+                      EMAIL_CHANGE_ALLOWED = false;
+                      SHOW_PASSWORD_HINT = false;
+                      WEBSOCKET_ENABLED = true;
+                      ROCKET_ADDRESS = vaultwardenHost;
+                      ROCKET_PORT = vaultwardenPort;
+                      LOG_LEVEL = settings.logLevel;
+                      EXTENDED_LOGGING = true;
+                      LOG_TIMESTAMP_FORMAT = "";
+                      IP_HEADER = "X-Real-IP";
+                      IP_HEADER_TRUSTED_PROXIES = "127.0.0.1";
                     };
                   };
-                };
 
-                networking.firewall.allowedTCPPorts = [ 443 ];
-                networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 443 ];
+                  services.fail2ban = {
+                    enable = true;
+                    jails.vaultwarden-auth = {
+                      filter = {
+                        # INI continuation needs indentation after the newline.
+                        INCLUDES.before = "common.conf\n vaultwarden.conf";
+                        DEFAULT = {
+                          _daemon = "vaultwarden";
+                          logtype = "journal";
+                        };
+                        Definition = {
+                          prefregex = "^%(__prefix_line)s<F-CONTENT>.+</F-CONTENT>$";
+                          journalmatch = "_SYSTEMD_UNIT=vaultwarden.service";
+                        };
+                      };
+                      settings = {
+                        enabled = true;
+                        backend = "systemd";
+                        port = "http,https";
+                        protocol = "tcp";
+                        maxretry = 8;
+                        findtime = "10m";
+                        bantime = "1h";
+                      }
+                      // lib.optionalAttrs (settings.fail2ban.ignoreIPs != [ ]) {
+                        ignoreip = lib.concatStringsSep " " settings.fail2ban.ignoreIPs;
+                      };
+                    };
+                  };
 
-                systemd.services.vaultwarden = {
-                  after = [ "postgresql.service" ];
-                  requires = [ "postgresql.service" ];
-                };
-              }
-              // lib.optionalAttrs (active && exportEnabled) {
-                system.build.appsVaultwardenExport = exportFactory.package;
-                systemd.services.apps-export-vaultwarden = {
-                  description = "Capture a private Vaultwarden export";
-                  serviceConfig = exportFactory.serviceConfig;
-                };
-              }
+                  networking.firewall.allowedTCPPorts = [ 443 ];
+
+                  systemd.services.vaultwarden = {
+                    after = [ "postgresql.service" ];
+                    requires = [ "postgresql.service" ];
+                    # Export withdrawal leaves a retained uncertainty barrier
+                    # effective for every later automatic application start.
+                    unitConfig.ConditionPathExists = exportFactory.appUnitCondition;
+                  };
+                })
+                (
+                  lib.optionalAttrs (active && exportEnabled) {
+                    system.build.appsVaultwardenExport = exportFactory.package;
+                    systemd.services.apps-export-vaultwarden = {
+                      description = "Capture a private Vaultwarden export";
+                      serviceConfig = exportFactory.serviceConfig;
+                    };
+                  }
+                )
             );
       };
   };

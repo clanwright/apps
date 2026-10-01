@@ -1,9 +1,28 @@
 # Vaultwarden role
 
-`@clanwright/apps-vaultwarden` is an `app` role. It imports the public Primitives PostgreSQL module for the `vaultwarden` database and state, and retains application state under `/var/lib/vaultwarden`. It uses the exported Vaultwarden 1.37.3 package from the pinned Apps nixpkgs input. Registration is closed by default. The admin token is supplied through an existing root-only SOPS runtime path. The unit orders after and requires PostgreSQL; database restore metadata stops the Vaultwarden unit.
+`@clanwright/apps-vaultwarden` exposes the `app` role. It imports the public
+Primitives PostgreSQL module with fixed database/user `vaultwarden`, state
+`vaultwarden-db`, and local socket database access. Application state is
+`vaultwarden-app` under `/var/lib/vaultwarden`. The native app unit requires and
+orders after PostgreSQL; database restore metadata stops Vaultwarden.
 
-Enabled ingress uses explicit public and private IPv4 Caddy listeners on port 443. Public `/admin` responds 404; private admin paths are rate limited and proxied only on the private destination. The recipe contributes a Network v3.0.0 `privateIngressClaims` request for that destination and the selected trusted interfaces. Network owns the guard and its claim grants no port; the Vaultwarden recipe separately opens TCP 443 globally and on `tailscale0`. This role does not generate nftables rules. The authentication Fail2ban jail and log path retain their current identities. `disabled-retained` keeps app and database state and secret metadata without Vaultwarden runtime or ingress claims.
+The recipe uses Apps' exported Vaultwarden package. Registration is closed by
+default. The admin environment-file secret defaults to `vaultwarden-admin-token`
+and uses an existing root-only SOPS runtime path. Apps creates no secret value.
 
-Use `clanModules.default` for normal selection; its high-level Vaultwarden option derives certificate, listener, and private guard settings from common installation context. The lower-level role interface is a recipe implementation surface. See the [public API](../../README.md).
+The native Caddy site has explicit public/private IPv4 listeners on port 443.
+Public `/admin` responds 404; private admin routes are rate limited. Caddy replaces
+`X-Real-IP` with the actual peer on every proxy path; Vaultwarden trusts the
+loopback proxy. `vaultwarden-auth` uses the stock Fail2ban Vaultwarden filter and
+native systemd journal backend. Its logging contract is part of the
+[public API](../../README.md#public-interface).
 
-Primitives v0.2.0 selects PostgreSQL 18.6. Existing PostgreSQL 17 installations require a separately tested major-version migration before activation; updating the recipe does not migrate data. See [dependency migration](../../README.md#dependency-migration).
+Use the public selection API for ordinary composition. The lower-level role adds
+`certificateEmail`, `ingress.publicIPv4`, `ingress.privateIPv4` and
+`ingress.trustedInterfaces`. See the README for native Network claims,
+certificate authority and the consumer's [Access/VPN composition](../../README.md#public-interface).
+These integrations retain their native service owners.
+
+See [dependencies and migration](../../README.md#dependencies-and-migration)
+before changing database major versions, and [Recovery](../../docs/recovery.md)
+for lifecycle retention, opt-in exports, historical validation and acceptance limits.

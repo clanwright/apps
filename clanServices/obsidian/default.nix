@@ -1,8 +1,7 @@
 {
-  appsPkgsFor,
   couchdbModule,
+  couchdbErlangFor,
   lib,
-  recoveryModule,
   recoveryToolsFor,
   ...
 }:
@@ -19,44 +18,23 @@
     interface =
       { lib, ... }:
       {
-        options = {
-          domain = lib.mkOption {
-            type = lib.types.str;
-            description = "Public LiveSync domain.";
+        options =
+          (import ../../modules/app-options.nix {
+            inherit lib;
+            app = "obsidian";
+          })
+          // {
+            certificateEmail = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "ACME account email for this app certificate.";
+            };
+            ingress.publicIPv4 = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Public IPv4 address where Caddy accepts app traffic.";
+            };
           };
-
-          acme.certName = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Existing ACME certificate profile used by Caddy.";
-          };
-
-          ingress.publicIPv4 = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Public IPv4 address where Caddy accepts LiveSync traffic.";
-          };
-
-          adminConfigSecretName = lib.mkOption {
-            type = lib.types.str;
-            default = "obsidian-admin-ini";
-            description = "SOPS secret name containing the CouchDB administrator INI fragment.";
-          };
-
-          lifecycle = lib.mkOption {
-            type = lib.types.enum [
-              "enabled"
-              "disabled-retained"
-            ];
-            default = "enabled";
-            description = "Whether LiveSync runtime owners are active or retained for recovery.";
-          };
-          export.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Provide a manually callable native LiveSync export.";
-          };
-        };
       };
 
     perInstance =
@@ -69,103 +47,110 @@
         nixosModule =
           { config, pkgs, ... }:
           let
-            system = pkgs.stdenv.hostPlatform.system;
-            appsPkgs = appsPkgsFor system;
-            recoveryTools = recoveryToolsFor system;
+            recoveryTools = recoveryToolsFor pkgs;
             active = settings.lifecycle == "enabled";
             exportEnabled = settings.export.enable;
-            recoveryUnit = import ../../recovery/livesync.nix {
+            producer = import ../../recovery/livesync.nix {
               inherit
                 lib
                 pkgs
                 config
-                settings
-                appsPkgs
                 ;
               tools = recoveryTools;
+              erlang = couchdbErlangFor pkgs.stdenv.hostPlatform.system;
             };
             exportFactory = import ../../recovery/export.nix {
-              inherit lib pkgs;
+              inherit lib pkgs producer;
               id = "livesync";
-              unit = recoveryUnit;
             };
             publicIPv4 =
               if settings.ingress.publicIPv4 == null then
                 throw "Apps Obsidian: active installation requires publicIPv4"
               else
                 settings.ingress.publicIPv4;
-            certName =
-              if settings.acme.certName == null then
-                throw "Apps Obsidian: active installation requires certificate context"
+            certificateId = if settings.certificateId == null then settings.domain else settings.certificateId;
+            certificateEmail =
+              if settings.certificateEmail == null || settings.certificateEmail == "" then
+                throw "Apps: active installation requires certificateEmail"
               else
-                settings.acme.certName;
+                settings.certificateEmail;
             liveSyncCaddyRoute = ''
-              @obsidianPaths path / /_session /obsidian /obsidian/*
-              handle @obsidianPaths {
-                reverse_proxy 127.0.0.1:5984
-              }
-              handle {
-                respond 404
+              route {
+                @obsidianPaths path / /_session /obsidian /obsidian/*
+                handle @obsidianPaths {
+                  reverse_proxy 127.0.0.1:5984
+                }
+                handle {
+                  respond 404
+                }
               }
             '';
           in
-          {
-            imports = [
-              couchdbModule
-              recoveryModule
-            ];
+          lib.recursiveUpdate
+            {
+              imports = [
+                couchdbModule
+              ];
 
-            services.clanwright.primitives.couchdb = {
-              enable = true;
-              inherit (settings) lifecycle adminConfigSecretName;
-              stateName = "obsidian";
-              extraConfig = {
-                couchdb = {
-                  single_node = true;
-                  max_document_size = 50000000;
+              services.clanwright.primitives.couchdb = {
+                enable = true;
+                inherit (settings) lifecycle adminConfigSecretName;
+                stateName = "obsidian";
+                extraConfig = {
+                  couchdb = {
+                    single_node = true;
+                    max_document_size = 50000000;
+                  };
+                  chttpd = {
+                    enable_cors = true;
+                    require_valid_user = true;
+                    max_http_request_size = 4294967296;
+                  };
+                  cors = {
+                    credentials = true;
+                    origins = "app://obsidian.md,capacitor://localhost,http://localhost";
+                  };
+                  httpd.WWW-Authenticate = ''Basic realm="couchdb"'';
+                  log.level = "warning";
                 };
-                chttpd = {
-                  enable_cors = true;
-                  require_valid_user = true;
-                  max_http_request_size = 4294967296;
-                };
-                cors = {
-                  credentials = true;
-                  origins = "app://obsidian.md,capacitor://localhost,http://localhost";
-                };
-                httpd.WWW-Authenticate = ''Basic realm="couchdb"'';
-                log.level = "warning";
               };
-            };
-          }
-          // lib.optionalAttrs exportEnabled {
-            clan.core.state.apps-export-livesync.folders = [ "/var/lib/clanwright-app-exports/livesync" ];
-          }
-          // lib.optionalAttrs active {
-            clanwright.recovery.units.livesync = recoveryUnit;
-            networkCore = {
-              caddy.fragments.${instanceName} = {
-                hostName = settings.domain;
-                listenAddresses = [ publicIPv4 ];
-                useACMEHost = certName;
-                logFile = "/var/log/caddy/obsidian-access.log";
-                extraConfig = liveSyncCaddyRoute;
-              };
-              acme.certificateClaims.${certName} = {
-                inherit (settings) domain;
-                extraDomainNames = [ ];
-              };
-            };
+            }
+            (
+              lib.recursiveUpdate
+                (lib.optionalAttrs exportEnabled {
+                  clan.core.state.apps-export-livesync.folders = [ "/var/lib/clanwright-app-exports/livesync" ];
+                })
+                (
+                  lib.recursiveUpdate
+                    (lib.optionalAttrs active {
+                      # A withdrawn exporter must not bypass its retained uncertainty
+                      # barrier when the application itself remains enabled.
+                      systemd.services.couchdb.unitConfig.ConditionPathExists = exportFactory.appUnitCondition;
+                      security.acme.certs.${certificateId} = {
+                        inherit (settings) domain;
+                        email = certificateEmail;
+                        group = "acme";
+                      };
+                      services.caddy.virtualHosts.${settings.domain} = {
+                        owner = "apps:${instanceName}";
+                        listenAddresses = [ publicIPv4 ];
+                        useACMEHost = certificateId;
+                        extraConfig = lib.mkOrder 2000 liveSyncCaddyRoute;
+                      };
 
-            networking.firewall.allowedTCPPorts = [ 443 ];
-          }
-          // lib.optionalAttrs (active && exportEnabled) {
-            system.build.appsLiveSyncExport = exportFactory.package;
-            systemd.services.apps-export-livesync = {
-              description = "Capture a private LiveSync export";
-              serviceConfig = exportFactory.serviceConfig;
-            };
-          };
+                      networking.firewall.allowedTCPPorts = [ 443 ];
+                    })
+                    (
+                      lib.optionalAttrs (active && exportEnabled) {
+                        system.build.appsLiveSyncExport = exportFactory.package;
+                        systemd.services.apps-export-livesync = {
+                          description = "Capture a private LiveSync export";
+                          serviceConfig = exportFactory.serviceConfig;
+                        };
+                      }
+                    )
+                )
+            );
       };
   };
 }

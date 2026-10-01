@@ -12,11 +12,8 @@ expect_failure() {
 
 root=$fixtureRoot
 test -d "$root" || fail 'fixture root missing'
-mkdir -p "$root/stage" "$root/vaultwarden/attachments" "$root/pg" "$root/socket"
+mkdir -p "$root/vaultwarden/attachments" "$root/pg" "$root/socket"
 chmod 700 "$root" "$root/pg" "$root/socket"
-printf '%s\n' active > "$root/vaultwarden.state"
-printf '%s\n' active > "$root/couchdb.state"
-: > "$root/service-events"
 
 cleanup() {
   local status=$?
@@ -24,8 +21,6 @@ cleanup() {
   if test -f "$root/pg/postmaster.pid"; then pg_ctl -D "$root/pg" -m immediate -w stop || true; fi
   if test -f "$root/couchdb.pid"; then kill "$(cat "$root/couchdb.pid")" 2>/dev/null || true; fi
   if test "$status" -ne 0; then
-    printf '\nService events:\n' >&2
-    cat "$root/service-events" >&2 || true
     for log in "$out"/*.log "$root/couch.log"; do
       test "$log" != "$out/check.log" || continue
       if test -f "$log"; then
@@ -40,9 +35,12 @@ cleanup() {
 trap cleanup EXIT
 
 initdb -D "$root/pg" --no-instructions --auth=trust > "$out/initdb.log" 2>&1
-pg_ctl -D "$root/pg" -o "-c unix_socket_directories=$root/socket -c listen_addresses=''" -w start > "$out/pg-start.log" 2>&1
-export PGHOST="$root/socket" PGUSER="$(id -un)" PGDATABASE=vaultwarden
+# Disposable test control enables one prepared transaction; the production
+# package/guard is unchanged and no live PostgreSQL setting is modified.
+pg_ctl -D "$root/pg" -o "-c unix_socket_directories=$root/socket -c listen_addresses='' -c port=$pgPort -c max_prepared_transactions=1" -w start > "$out/pg-start.log" 2>&1
+export PGPORT="$pgPort" PGHOST="$root/socket" PGUSER="$(id -un)" PGDATABASE=vaultwarden
 createdb vaultwarden
+psql -X -v ON_ERROR_STOP=1 -c 'CREATE ROLE vaultwarden LOGIN'
 psql -X -v ON_ERROR_STOP=1 <<'SQL'
 CREATE TABLE users (uuid text PRIMARY KEY);
 CREATE TABLE organizations (uuid text PRIMARY KEY);
@@ -55,15 +53,46 @@ SQL
 mkdir -p "$root/vaultwarden/attachments/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 printf 'fixture attachment\n' > "$root/vaultwarden/attachments/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/cccccccc-cccc-cccc-cccc-cccccccccccc"
 test "$(stat -c %s "$root/vaultwarden/attachments/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/cccccccc-cccc-cccc-cccc-cccccccccccc")" = 19
-pg_dump -Fc -f "$root/source.pg-dump" vaultwarden
-pg_ctl -D "$root/pg" -m immediate -w stop > "$out/pg-stop.log" 2>&1
-pass 'PostgreSQL 18 fixture seeded with linked attachment'
+postgres_pid=$(head -n 1 "$root/pg/postmaster.pid")
+printf 'linked file bytes\n' > "$root/vaultwarden/hardlink-a"
+ln "$root/vaultwarden/hardlink-a" "$root/vaultwarden/hardlink-b"
+test "$(stat -c %i "$root/vaultwarden/hardlink-a")" = "$(stat -c %i "$root/vaultwarden/hardlink-b")" || fail 'hardlink fixture was not linked'
+pass "PostgreSQL $postgresVersion fixture seeded with linked attachment; source server remains running"
+
+coproc APP_SESSION { psql -X --no-password -A -t --username=vaultwarden --dbname=vaultwarden; }
+app_session_pid=$APP_SESSION_PID
+printf '%s\n' '\echo app-session-ready' >&"${APP_SESSION[1]}"
+IFS= read -r -t 20 readiness <&"${APP_SESSION[0]}"
+test "$readiness" = app-session-ready || fail 'app-role backend did not become ready'
+mkdir -m 700 "$root/vw-busy-backend"
+expect_failure 'Vaultwarden existing idle app-role backend' "$vwCapture" "$root/vw-busy-backend"
+test ! -s "$root/vw-busy-backend/pg-dump" || fail 'guard allowed an archive with app backend present'
+test ! -e "$root/vw-busy-backend/format-version" || fail 'guard rejection wrote success marker'
+printf '%s\n' '\q' >&"${APP_SESSION[1]}"
+wait "$app_session_pid"
+pass 'same production SQL rejects an idle app-role backend; fixture closes it without polling or sleeps'
+
+psql -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+INSERT INTO users VALUES ('dddddddd-dddd-dddd-dddd-dddddddddddd');
+PREPARE TRANSACTION 'apps-fixture-pending';
+SQL
+mkdir -m 700 "$root/vw-prepared-transaction"
+expect_failure 'Vaultwarden session-independent prepared transaction' "$vwCapture" "$root/vw-prepared-transaction"
+test ! -s "$root/vw-prepared-transaction/pg-dump" || fail 'guard allowed an archive with prepared transaction present'
+test ! -e "$root/vw-prepared-transaction/format-version" || fail 'prepared transaction rejection wrote success marker'
+psql -X -v ON_ERROR_STOP=1 -c "ROLLBACK PREPARED 'apps-fixture-pending'"
+pass 'same production SQL rejects prepared activity after its client exits; fixture rolls back only its own transaction'
 
 mkdir -m 700 "$root/vw-valid"
 "$vwCapture" "$root/vw-valid"
-test "$(cat "$root/vaultwarden.state")" = active || fail 'Vaultwarden did not resume'
-test ! -e "$root/stage/pg-dump" || fail 'native staging remained after capture'
-pass 'Vaultwarden public capture command completed and resumed'
+test ! -e "$root/vw-valid/format-version" || fail 'data-only capture wrote lifecycle success marker'
+cp -- "$vwFormatMarker" "$root/vw-valid/format-version"
+cmp "$root/vaultwarden/hardlink-a" "$root/vw-valid/vaultwarden-app/hardlink-a"
+cmp "$root/vaultwarden/hardlink-b" "$root/vw-valid/vaultwarden-app/hardlink-b"
+test "$(stat -c %i "$root/vw-valid/vaultwarden-app/hardlink-a")" != "$(stat -c %i "$root/vw-valid/vaultwarden-app/hardlink-b")" || fail 'capture retained internal hardlinks'
+test "$(stat -c %h "$root/vw-valid/vaultwarden-app/hardlink-a")" = 1 || fail 'copied file has shared links'
+pass 'Vaultwarden foreground archive and independent file copies; fixture supplies validation marker'
 
 # Validation runs with the same namespace restrictions as the published
 # Reliability contract: only store executables, restored input and private tmp.
@@ -109,113 +138,32 @@ cp -a "$root/vw-valid" "$root/vw-missing-attachment"
 rm -f "$root/vw-missing-attachment/vaultwarden-app/attachments/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/cccccccc-cccc-cccc-cccc-cccccccccccc"
 expect_failure 'Vaultwarden missing attachment' validate_sandbox "$vwValidate" "$root/vw-missing-attachment"
 
-printf '%s\n' inactive > "$root/vaultwarden.state"
+psql -X -v ON_ERROR_STOP=1 -c "INSERT INTO users VALUES ('dddddddd-dddd-dddd-dddd-dddddddddddd')"
 mkdir -m 700 "$root/vw-stopped"
 "$vwCapture" "$root/vw-stopped"
-test "$(cat "$root/vaultwarden.state")" = inactive || fail 'initially stopped Vaultwarden was started'
-pass 'Vaultwarden initially stopped state preserved'
+cp -- "$vwFormatMarker" "$root/vw-stopped/format-version"
+pg_restore --file="$out/initial-capture.sql" "$root/vw-valid/pg-dump"
+pg_restore --file="$out/fresh-capture.sql" "$root/vw-stopped/pg-dump"
+if grep -q dddddddd-dddd-dddd-dddd-dddddddddddd "$out/initial-capture.sql"; then fail 'initial archive contained future row'; fi
+grep -q dddddddd-dddd-dddd-dddd-dddddddddddd "$out/fresh-capture.sql" || fail 'capture reused a stale archive'
+pass 'Vaultwarden fresh database archive comes from the same running source PostgreSQL process'
 
-touch "$root/fail-native-pre"
-mkdir -m 700 "$root/vw-stopped-failure"
-expect_failure 'Vaultwarden initially stopped preparation failure' "$vwCapture" "$root/vw-stopped-failure"
-test "$(cat "$root/vaultwarden.state")" = inactive || fail 'stopped Vaultwarden failure started service'
-rm "$root/fail-native-pre"
-
-printf '%s\n' active > "$root/vaultwarden.state"
-touch "$root/fail-native-pre"
-mkdir -m 700 "$root/vw-pre-failure"
-expect_failure 'Vaultwarden preparation failure' "$vwCapture" "$root/vw-pre-failure"
-test "$(cat "$root/vaultwarden.state")" = active || fail 'preparation failure left Vaultwarden stopped'
-rm "$root/fail-native-pre"
-
-touch "$root/fail-native-post"
-mkdir -m 700 "$root/vw-post-failure"
-expect_failure 'Vaultwarden cleanup failure' "$vwCapture" "$root/vw-post-failure"
-test "$(cat "$root/vaultwarden.state")" = active || fail 'cleanup failure left Vaultwarden stopped'
-rm "$root/fail-native-post"
+touch "$root/fail-dump"
+mkdir -m 700 "$root/vw-dump-failure"
+expect_failure 'Vaultwarden foreground database dump failure' "$vwCapture" "$root/vw-dump-failure"
+test ! -e "$root/vw-dump-failure/format-version" || fail 'dump failure wrote success marker'
+test -s "$root/vw-dump-failure/pg-dump" || fail 'partial archive evidence disappeared'
+rm "$root/fail-dump"
 
 mv "$root/vaultwarden" "$root/vaultwarden-hidden"
 mkdir -m 700 "$root/vw-copy-failure"
-expect_failure 'Vaultwarden copy failure after preparation' "$vwCapture" "$root/vw-copy-failure"
-test "$(cat "$root/vaultwarden.state")" = active || fail 'copy failure left Vaultwarden stopped'
-test ! -e "$root/vw-copy-failure/format-version" || fail 'copy failure published format marker'
+expect_failure 'Vaultwarden copy source failure after dump' "$vwCapture" "$root/vw-copy-failure"
+test ! -e "$root/vw-copy-failure/format-version" || fail 'copy failure wrote success marker'
 mv "$root/vaultwarden-hidden" "$root/vaultwarden"
-
-touch "$root/fail-vaultwarden-stop"
-mkdir -m 700 "$root/vw-stop-failure"
-expect_failure 'Vaultwarden stop failure' "$vwCapture" "$root/vw-stop-failure"
-test "$(cat "$root/vaultwarden.state")" = active || fail 'stop failure changed Vaultwarden state'
-rm "$root/fail-vaultwarden-stop"
-
-touch "$root/fail-vaultwarden-start"
-mkdir -m 700 "$root/vw-start-failure"
-expect_failure 'Vaultwarden restart failure' "$vwCapture" "$root/vw-start-failure"
-test ! -e "$root/vw-start-failure/format-version" || fail 'restart failure published format marker'
-rm "$root/fail-vaultwarden-start"
-printf '%s\n' active > "$root/vaultwarden.state"
-
-touch "$root/block-vaultwarden-stop"
-mkdir -m 700 "$root/vw-terminated"
-setsid "$vwCapture" "$root/vw-terminated" > "$out/vw-termination.log" 2>&1 &
-capture_pid=$!
-for attempt in $(seq 1 100); do
-  if test -s "$root/blocked-vaultwarden-pid"; then break; fi
-  sleep 0.05
-done
-test -s "$root/blocked-vaultwarden-pid" || fail 'termination fixture did not block'
-blocked_pid=$(cat "$root/blocked-vaultwarden-pid")
-kill -TERM -- "-$capture_pid"
-if wait "$capture_pid"; then fail 'terminated capture succeeded'; fi
-kill -0 "$blocked_pid" 2>/dev/null && fail 'capture left blocked service-controller process running'
-test "$(cat "$root/vaultwarden.state")" = active || fail 'terminated capture left Vaultwarden stopped'
-test ! -e "$root/vw-terminated/format-version" || fail 'terminated capture published format marker'
-rm "$root/block-vaultwarden-stop"
-pass 'Vaultwarden catchable termination cleaned child group and resumed'
-
-touch "$root/block-native-pre"
-mkdir -m 700 "$root/vw-terminated-pre"
-setsid "$vwCapture" "$root/vw-terminated-pre" > "$out/vw-pre-termination.log" 2>&1 &
-capture_pid=$!
-for attempt in $(seq 1 100); do
-  if test -s "$root/blocked-native-pre-pid"; then break; fi
-  sleep 0.05
-done
-test -s "$root/blocked-native-pre-pid" || fail 'native preparation did not block'
-blocked_pid=$(cat "$root/blocked-native-pre-pid")
-kill -TERM -- "-$capture_pid"
-if wait "$capture_pid"; then fail 'terminated preparation succeeded'; fi
-kill -0 "$blocked_pid" 2>/dev/null && fail 'native preparation child survived TERM'
-test "$(cat "$root/vaultwarden.state")" = active || fail 'terminated preparation left Vaultwarden stopped'
-test ! -e "$root/vw-terminated-pre/format-version" || fail 'terminated preparation published format marker'
-test ! -e "$root/stage/pg-dump" || fail 'partial native staging remained after TERM'
-rm "$root/block-native-pre"
-pass 'Vaultwarden TERM during partial native preparation unwound staging'
-
-touch "$root/block-vaultwarden-stop"
-rm "$root/blocked-vaultwarden-pid"
-mkdir -m 700 "$root/vw-lock-holder" "$root/vw-concurrent"
-setsid "$vwCapture" "$root/vw-lock-holder" > "$out/vw-lock-holder.log" 2>&1 &
-first_pid=$!
-for attempt in $(seq 1 100); do
-  if test -s "$root/blocked-vaultwarden-pid"; then break; fi
-  sleep 0.05
-done
-test -s "$root/blocked-vaultwarden-pid" || fail 'Vaultwarden lock holder did not block'
-active_before=$(grep -c '^is-active vaultwarden$' "$root/service-events")
-"$vwCapture" "$root/vw-concurrent" > "$out/vw-concurrent.log" 2>&1 &
-second_pid=$!
-sleep 0.2
-kill -0 "$second_pid" || fail 'waiting Vaultwarden capture exited early'
-test "$(grep -c '^is-active vaultwarden$' "$root/service-events")" = "$active_before" || fail 'concurrent Vaultwarden capture bypassed lock'
-test ! -e "$root/vw-concurrent/format-version" || fail 'concurrent Vaultwarden capture published before lock release'
-rm "$root/block-vaultwarden-stop"
-kill -TERM -- "-$first_pid"
-if wait "$first_pid"; then fail 'terminated Vaultwarden lock holder succeeded'; fi
-wait "$second_pid" || fail 'waiting Vaultwarden capture failed after lock release'
-test -f "$root/vw-concurrent/format-version" || fail 'waiting Vaultwarden capture did not publish'
-test ! -e "$root/stage/pg-dump" || fail 'waiting Vaultwarden capture left staging'
-test "$(cat "$root/vaultwarden.state")" = active || fail 'waiting Vaultwarden capture left service stopped'
-pass 'Vaultwarden capture lock serialized overlap'
+test "$(head -n 1 "$root/pg/postmaster.pid")" = "$postgres_pid" || fail 'source PostgreSQL restarted during capture'
+kill -0 "$postgres_pid" || fail 'source PostgreSQL no longer running'
+psql -X -v ON_ERROR_STOP=1 -At -c 'SELECT count(*) FROM users' | grep -qx 2 || fail 'source query failed after captures'
+pass 'data-only failure retains evidence; native lifecycle/teardown remains PREDEPLOY'
 
 # LiveSync fixture and failure cases follow below.
 mkdir -p "$root/couchdb" "$root/couch-home"
@@ -236,9 +184,8 @@ port = 15984
 file = $root/couch.log
 level = warning
 EOF
-cat > "$root/vm.args" <<'EOF'
--name couchdb@127.0.0.1
--setcookie disposablefixturecookie
+sed 's/^-setcookie .*/-setcookie disposablefixturecookie/' "$couchArgsFile" > "$root/vm.args"
+cat >> "$root/vm.args" <<'EOF'
 -kernel inet_dist_use_interface {127,0,0,1}
 +Bd -noinput
 EOF
@@ -272,13 +219,14 @@ curl --noproxy '*' -fsS --max-time 5 -u fixture:fixture-password \
   > "$out/couch-seed.json"
 jq -e 'all(.[]; .ok == true)' "$out/couch-seed.json" > /dev/null
 stop_couch
-pass 'CouchDB 3.5.2 fixture seeded with linked LiveSync chunk'
+pass "CouchDB $couchdbVersion fixture seeded with linked LiveSync chunk"
 
 mkdir -m 700 "$root/ls-valid"
 "$lsCapture" "$root/ls-valid"
-test "$(cat "$root/couchdb.state")" = active || fail 'LiveSync did not resume'
+test ! -e "$root/ls-valid/format-version" || fail 'data-only capture wrote lifecycle success marker'
+cp -- "$lsFormatMarker" "$root/ls-valid/format-version"
 validate_sandbox "$lsValidate" "$root/ls-valid"
-pass 'LiveSync public capture and disposable CouchDB validation'
+pass 'LiveSync foreground native capture and disposable CouchDB semantic validation'
 
 start_couch
 curl --noproxy '*' -fsS --max-time 5 -u fixture:fixture-password \
@@ -288,6 +236,7 @@ curl --noproxy '*' -fsS --max-time 5 -u fixture:fixture-password \
 stop_couch
 mkdir -m 700 "$root/ls-missing-child"
 "$lsCapture" "$root/ls-missing-child"
+cp -- "$lsFormatMarker" "$root/ls-missing-child/format-version"
 expect_failure 'LiveSync missing active chunk' validate_sandbox "$lsValidate" "$root/ls-missing-child"
 
 cp -a "$root/ls-valid" "$root/ls-unsupported"
@@ -295,57 +244,11 @@ rm "$root/ls-unsupported/format-version"
 printf '%s\n' unsupported > "$root/ls-unsupported/format-version"
 expect_failure 'LiveSync unsupported format' validate_sandbox "$lsValidate" "$root/ls-unsupported"
 
-printf '%s\n' inactive > "$root/couchdb.state"
-mkdir -m 700 "$root/ls-stopped"
-"$lsCapture" "$root/ls-stopped"
-test "$(cat "$root/couchdb.state")" = inactive || fail 'initially stopped CouchDB was started'
-pass 'LiveSync initially stopped state preserved'
-
-printf '%s\n' active > "$root/couchdb.state"
-touch "$root/fail-couchdb-stop"
-mkdir -m 700 "$root/ls-stop-failure"
-expect_failure 'LiveSync stop failure' "$lsCapture" "$root/ls-stop-failure"
-test "$(cat "$root/couchdb.state")" = active || fail 'stop failure changed CouchDB state'
-rm "$root/fail-couchdb-stop"
-
-touch "$root/fail-couchdb-start"
-mkdir -m 700 "$root/ls-start-failure"
-expect_failure 'LiveSync restart failure' "$lsCapture" "$root/ls-start-failure"
-test ! -e "$root/ls-start-failure/format-version" || fail 'restart failure published format marker'
-rm "$root/fail-couchdb-start"
-printf '%s\n' active > "$root/couchdb.state"
-
-touch "$root/block-couchdb-stop"
-mkdir -m 700 "$root/ls-terminated" "$root/ls-concurrent"
-setsid "$lsCapture" "$root/ls-terminated" > "$out/ls-termination.log" 2>&1 &
-first_pid=$!
-for attempt in $(seq 1 100); do
-  if test -s "$root/blocked-couchdb-pid"; then break; fi
-  sleep 0.05
-done
-test -s "$root/blocked-couchdb-pid" || fail 'LiveSync stop did not block'
-blocked_pid=$(cat "$root/blocked-couchdb-pid")
-active_before=$(grep -c '^is-active couchdb$' "$root/service-events")
-"$lsCapture" "$root/ls-concurrent" > "$out/ls-concurrent.log" 2>&1 &
-second_pid=$!
-sleep 0.2
-test "$(grep -c '^is-active couchdb$' "$root/service-events")" = "$active_before" || fail 'concurrent LiveSync capture bypassed lock'
-test ! -e "$root/ls-concurrent/format-version" || fail 'concurrent capture published before lock release'
-rm "$root/block-couchdb-stop"
-kill -TERM -- "-$first_pid"
-if wait "$first_pid"; then fail 'terminated LiveSync capture succeeded'; fi
-kill -0 "$blocked_pid" 2>/dev/null && fail 'LiveSync service-controller child survived TERM'
-test ! -e "$root/ls-terminated/format-version" || fail 'terminated LiveSync capture published format marker'
-wait "$second_pid" || fail 'waiting LiveSync capture failed after lock release'
-test -f "$root/ls-concurrent/format-version" || fail 'waiting LiveSync capture did not publish'
-test "$(cat "$root/couchdb.state")" = active || fail 'LiveSync TERM left CouchDB stopped'
-pass 'LiveSync capture lock serialized overlap and process-group TERM resumed service'
-
 mv "$root/couchdb" "$root/couchdb-hidden"
 mkdir -m 700 "$root/ls-source-failure"
-expect_failure 'LiveSync source capture failure' "$lsCapture" "$root/ls-source-failure"
-test "$(cat "$root/couchdb.state")" = active || fail 'source failure left CouchDB stopped'
-test ! -e "$root/ls-source-failure/format-version" || fail 'source failure published format marker'
+expect_failure 'LiveSync foreground source capture failure' "$lsCapture" "$root/ls-source-failure"
+test ! -e "$root/ls-source-failure/format-version" || fail 'source failure wrote success marker'
 mv "$root/couchdb-hidden" "$root/couchdb"
+pass 'manager activity, inhibition, cancellation and descendant proof remain PREDEPLOY'
 
 pass 'all recovery runtime checks'

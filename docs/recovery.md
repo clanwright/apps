@@ -1,4 +1,4 @@
-# Application recovery contract
+# Native application exports and retained validation
 
 ## Native exports
 
@@ -12,27 +12,48 @@ outputs; it does not start captures or create timers, destinations or uploads.
 | Vaultwarden | `apps-export-vaultwarden.service` | `config.system.build.appsVaultwardenExport` | `apps-export-vaultwarden`: `/var/lib/clanwright-app-exports/vaultwarden` |
 | LiveSync | `apps-export-livesync.service` | `config.system.build.appsLiveSyncExport` | `apps-export-livesync`: `/var/lib/clanwright-app-exports/livesync` |
 
-Systemd owns the operation: `ExecStartPre` prepares an empty private staging
-directory, `ExecStart` directly runs the existing application capture handler,
-`ExecStartPost` publishes the completed artifact, and `ExecStopPost` removes
-unfinished staging. State and runtime directories are root-owned, mode `0700`.
-There is no second executor, process supervisor or status ledger.
+Systemd owns preparation, foreground capture, publication and stop cleanup.
+Generated stages use a persistent root-owned `0700` StateDirectory, native
+deadlines and process teardown. An invocation-bound attempt record and activation
+inhibit survive interrupted operations; there is no second executor or process
+supervisor.
 
-Start a service explicitly, or let the consumer provide a native timer. Do not
-trigger a new capture independently from each destination's preparation hook:
-capture scheduling is separate from delivery, and production resumes before any
-reader copy or network operation begins. The service serializes its own starts;
-the existing capture lock also protects compatible command callers.
+Start a service explicitly, or let the consumer provide a native timer. Capture
+scheduling is separate from delivery: application resumption must complete before
+publication and before reader copying or network operations. Prior active or
+inactive state is recorded before the first service mutation. An unresolved
+attempt blocks a new allocation until its teardown and resumption are confirmed.
 
-Publication replaces a relative `current` pointer atomically under a bounded
-exclusive lock. Readers cannot observe a partial or mixed artifact. This does
-not promise durability across power loss. A failure before publication preserves
-the previous export. If publication succeeds but later reclamation fails, the
-new completed export remains usable and the service reports failure. Systemd
-result and journal are failure evidence; never infer successful capture solely
-from a destination's last upload time. Interrupted staging and noncurrent
-exporter-owned leftovers are reclaimed on a later capture. Neither publisher nor
-its cleanup owns reader directories.
+Publication atomically replaces the relative `current` pointer under a bounded
+exclusive lock. Before this commit, every failure preserves the old complete
+export. Once the commit selects the new complete export, a later unit failure or
+cancellation reports failure without rolling back that selection. Readers must
+never observe a partial or mixed artifact. This does not promise power-loss
+durability. Systemd result and journal report failures; a destination's last
+upload time is not capture evidence.
+
+Only exporter-owned, unselected data may be reclaimed, before the next allocation.
+A pending attempt record selected by `current` must never be cleanup input.
+Normal deactivation keeps `current`. Two producer-sized trees cover the selected
+export and the next attempt, including transient/native workspace; independent
+disk reader copies require additional capacity. Neither publisher nor its cleanup
+owns reader directories. Their acceptance evidence is governed by the
+[predeployment boundary](#acceptance-boundary).
+
+Publication requires successful quiescent capture, confirmed descendant teardown
+and verified restoration of the original application activity before writing
+the completion marker and metadata. A bounded payload scan rejects links, special
+files and multiply linked files; capture timestamps must be ordered nonnegative
+integers before selecting the generation. Vaultwarden additionally rejects remaining
+application database backends and prepared transactions before dumping. Semantic
+import is a separate retained-validation operation and does not run before commit. A complete capture does not certify
+semantic recovery, decryptability or runnable clients. The required semantic
+checks remain in `bin/validate` and the ordinary capture/import fixture.
+
+The CouchDB helper copies directly into pending, without another full capture
+tree. Reserve full payload bytes plus its uncapped temporary path-list, filesystem
+metadata and source-growth headroom. Retained validation needs additional copies
+described below; the two-producer-tree bound is not a total-host storage cap.
 
 ### Native Restic readers
 
@@ -44,7 +65,7 @@ bin/validate ABSOLUTE_RESTORED_DIRECTORY
 ```
 
 `prepare-reader` runs as root and accepts an existing empty root-owned `0700`
-directory. It resolves the published export and copies it while holding a shared
+directory outside the export state tree. It resolves the published export and copies it while holding a shared
 publication lock, then releases the lock before Restic runs. Copies share no
 mutable files with the published export; reflinks are an optional optimization
 with ordinary-copy fallback. Export roots and `current` are not direct Restic
@@ -53,8 +74,8 @@ successfully. Failure can leave partial files, which the owning job must remove.
 
 `--max-age` is mandatory and positive. Admission checks run before and after
 copying and reject missing, malformed, future-dated or expired metadata. Age is
-measured conservatively from capture start, including any wait for the existing
-capture lock. It is an admission-age limit, not a maximum age on arrival at a
+measured conservatively from the recorded attempt start, including the pause,
+copy and restoration. It is an admission-age limit, not a maximum age on arrival at a
 slow destination. Publication-lock waits are bounded to 30 seconds and copying
 to 600 seconds plus a 5-second forced-termination allowance. Contention can
 cause a visible missed capture/publication; ordinary flock does not promise
@@ -69,24 +90,28 @@ capture. Keep the last successful export available after a failed capture while
 its original age meets the consumer's limit. The recorded validator path is
 provenance, not executable input or a GC root.
 
-The [consumer example](../examples/native-restic.nix) composes four independent
-`services.restic.backups` jobs: each app to two destinations. It stores private
-copies below each job's `CacheDirectory`, not in `/run`.
-Restic cache files live in a separate `cache` child beside `apps-input`, because
-Restic automatically excludes its own cache directory from snapshots.
-The native `backupPrepareCommand` obtains the copy and `backupCleanupCommand` removes it
-after process teardown, including failed preparation or upload. Next-start
-cleanup handles leftovers after host loss. Start these jobs through systemd;
-the example disables direct wrapper creation to preserve that lifecycle.
+Native `services.restic.backups` wiring and reader ownership belong to the
+consumer, such as [Clanwright Reliability](https://github.com/clanwright/reliability).
+It consumes the configured `system.build` outputs and these public commands.
+Each job needs an independent disk-backed reader, separate from Restic's own
+cache, because Restic excludes its cache directory from snapshots. Full payloads
+must not be placed in `/run` merely to obtain native cleanup.
 
-The example explicitly uses `timerConfig = null`, because the NixOS Restic
-module otherwise defaults to daily timers. The consumer supplies destinations,
-credentials, schedules, retention and policy values (the example uses a one-day
-capture-age limit and a two-hour job deadline). Apps does not import Restic or
-provide a destination abstraction. Two simultaneous destinations require up to
-four export-sized trees per app, including capture staging and the published
-export, plus native database-helper staging. Storage capacity and I/O remain
-shared resources even though network delays hold no publication lock.
+The owning job establishes current-invocation ownership before preparation,
+preserves foreign/pre-existing directories, and confirms every reader process
+has stopped before removing owned input. Failed creation, partial preparation,
+interruption, failed cleanup and leftovers require the same ownership proof.
+A cleanup hook or control-group kill setting alone does not prove it. Apps
+provides no backup-job constructor, cleanup adapter or Restic/provider dependency.
+
+The consumer supplies destinations, credentials, schedules, retention, capture
+admission/arrival policy and deadlines; its final native Restic job package is
+the single authority for backup and checks. Two simultaneous destinations require
+up to four export-sized trees per app: two producer-sized trees, including
+transient/native workspace, plus two independent disk reader copies. Apps'
+Vaultwarden capture uses no shared database staging. Storage capacity and I/O
+remain shared even though network delays hold no publication lock. Retained
+validation adds its separate input/database scratch budget below.
 
 ### Validation on an existing application host
 
@@ -114,7 +139,7 @@ Preparation and semantic execution share a native transient systemd service,
 `apps-validate.service`, and one operation budget. Admission is host-wide across
 both applications: overlapping calls fail rather than queue. This bound applies
 to these updated retained wrappers; do not concurrently invoke an older wrapper
-or the bare `validateCommand`.
+or a private validation handler directly.
 
 The fixed resource envelope covers input scanning, copying, permission handoff,
 and the isolated database processes:
@@ -134,8 +159,12 @@ within this envelope fails; it does not justify retrying with an unbounded bare
 handler on production.
 
 **Storage prerequisite:** scratch uses `/var/tmp`, containing a full independent
-input copy plus disposable database/import files. Provision capacity for both
-and for retained failed attempts before starting. For same-host use, reserve
+input copy. The CouchDB validator additionally makes a writable full database
+copy in that private scratch; PostgreSQL imports its archive into disposable
+database files. Account for database writes, logs and semantic page files as well.
+Page limits bound rows, not bytes. These coexist with the original restored input,
+producer generations, reader copies and retained failed scratch. Provision all
+of them before starting; no reflink saving is assumed. For same-host use, reserve
 scratch capacity on a separate filesystem or with an administrator-managed
 quota so exhaustion cannot consume application storage. The command does not
 provision storage, set quotas, or bound aggregate file bytes. CPU/memory/task
@@ -182,59 +211,35 @@ requests one, and it is not part of normal cleanup.
 There is no custom process supervisor, background cleanup daemon or
 directory-scanning registry.
 
+## Public boundary
 
-Capture unit start time is bounded to one hour. Stop budgets are 180 seconds for
-Vaultwarden and 90 seconds for LiveSync; direct handler execution and
-`KillMode=mixed` preserve their existing cleanup/resumption path before final
-forced termination. The existing handler requirements and limits below still
-apply. Capture needs privileged source and service-manager access; native reader
-jobs need only completed export access, and isolated validators receive no
-production privileges.
+Apps exposes only the opt-in native export services and the matching reader and
+retained-validator packages listed above. It does not declare
+`clanwright.recovery.units` or import the public Primitives recovery schema.
+Consumers of the retired `captureCommand`/`validateCommand` executor interface
+must adopt native service starts and these packages; no compatibility adapter is
+provided. Application-specific handlers and their records remain private
+implementation details. Internally, Apps requires the package-valued Primitives
+SDK `mkRecoveryTools { pkgs = ...; }`: the effective database packages are passed
+explicitly to the PostgreSQL/CouchDB factories, and semantic checks are package
+callbacks. Caller `pkgs` supplies native glue. Database executables, configuration
+and DB-specific runtime components must come from the effective selected package;
+a matching disposable fixture from another nixpkgs cohort does not qualify the
+actual recipe. `mkCouchdbRecovery` also requires an explicit `erlang` package for
+native EPMD. For the unmodified public Primitives CouchDB module, Apps passes
+`primitives.inputs.nixpkgs.legacyPackages.${system}.beamMinimalPackages.erlang`
+from that same Primitives artifact. Primitives checks native CouchDB override
+replay against both original derivation and output identity; the original effective
+DB remains the executable/config authority. Component-changing native overrides
+need their explicitly selected component. Arbitrary or argument-ignoring custom
+factories are unsupported; no caller-package fallback or universal override
+guarantee is provided. Consumers must use compatible published inputs; see the
+[dependency and release contract](../README.md#dependencies-and-migration).
 
-### Lifecycle and compatibility
-
-`disabled-retained` preserves opted-in native export state while withdrawing
-runnable exporters and command outputs. Turning exports off or selecting `null`
-does not delete local data or historical backups. Retain the matching validator
-closure under a GC root and keep the pinned configuration before disabling,
-removing or upgrading an app. Merely recording a store path in metadata does
-not preserve the closure.
-
-The v0.4.0 wrapper continues to require a disposable validation host. Same-host
-support requires the updated wrapper closure, not a consumer-side wrapper around
-the old command. No recipe option or invocation change is needed. Retain the
-new `config.system.build.appsVaultwardenExport` or `appsLiveSyncExport` closure
-under a GC root after adopting the release. A matching updated validator can
-validate the unchanged v0.4.0 artifact formats, including historical captures
-without `export.json`. Metadata's `validatorStorePath` is never executed.
-
-Existing artifact formats remain unchanged. Historical captures without
-`export.json` can be checked by a compatible validator but are not silently
-admitted as newly published exports. Database-major migrations remain separate
-operations; the PostgreSQL 17/18 requirements below still apply.
-
-## Existing application-owned command interface
-
-Apps publishes two application-owned units through Primitives v0.2.0, revision
-`9dd13dd84479914fe8465ff6f77d2bb1f8034e2e`. The interface is
-`clanwright.recovery.units.<id>` with `contractVersion = 1`, `formatVersion`,
-`stateRefs`, `captureCommand`, and `validateCommand`.
-
-| ID | Recipe | Native state references |
-| --- | --- | --- |
-| `vaultwarden` | Vaultwarden | `vaultwarden-app`, `<database-name>-db` |
-| `livesync` | Obsidian LiveSync | `obsidian` |
-
-The default database name is `vaultwarden`. The recipe owns these declarations;
-the executor selects stable IDs and invokes commands without knowing database
-tables or duplicating native state paths. No Reliability import, backup timer,
-provider, retention policy or destination is added by declaring a unit.
-
-Apps supplies a shared, revision-qualified import of the recovery schema for
-both recipes. Consumers using Apps do not need another direct import of
-`primitives.nixosModules.recovery`. Independently importing the unkeyed schema
-again can cause a duplicate option declaration; verify shared module identity
-when composing other producers or executors.
+The physical state identities remain `vaultwarden-app`, `vaultwarden-db`,
+and `obsidian`; native export IDs remain `vaultwarden`
+and `livesync`. No backup timer, provider, retention policy or destination is
+added by enabling an export.
 
 ## Stored formats
 
@@ -254,9 +259,17 @@ Production restoration must separately apply the destination service's ownership
 and permissions; these commands do not restore production files.
 
 Vaultwarden pauses only the application writer, leaves PostgreSQL available,
-runs native Clan preparation, and copies the completed database archive and
-application files during the same pause. Native cleanup runs before restoring
-the original application activity. LiveSync pauses CouchDB while its public
+and writes a fresh native custom database archive plus independent application
+files during the same pause. Root opens the private archive output before the
+native postgres actor writes through the inherited descriptor. The effective
+PostgreSQL package and port are used; the socket is explicitly `/run/postgresql`.
+Capture children terminate before restoring the original application activity.
+Before dumping, one bounded native PostgreSQL query rejects remaining
+application-role sessions and prepared transactions for the application database.
+Stopping the app process alone does not prove its previously submitted server
+queries have finished. A busy or uncertain result fails capture; Apps neither
+polls nor terminates database backends.
+LiveSync pauses CouchDB while its public
 helper copies the database set and view indexes. Initially inactive services
 remain inactive. Failed preparation, copying or cleanup cannot produce a
 successful recovery point.
@@ -264,64 +277,49 @@ LiveSync uses the pinned native node identity `couchdb@127.0.0.1`. A custom
 `services.couchdb.argsFile` is rejected because a different source node requires
 a matching, explicitly reviewed recovery handler.
 
-## Invocation and isolation
+## Capture permissions and termination budget
 
-`captureCommand ABSOLUTE_EMPTY_OUTPUT_DIRECTORY` receives an existing empty
-private directory. A successful exit means the complete immutable local
-generation exists and the application has returned to its prior service state.
-Any nonzero exit is unpublishable. Upload must happen only after capture returns.
-The executor must serialize captures of the same state and grant only the
-documented local capture permissions. It supplies no repository credentials.
+Capture unit start time is bounded to one hour. Both exporters use a six-minute
+stop budget and `KillMode=control-group`, forced termination, no restart and no
+delegation. Foreground capture descendants must stop before finalization restores
+the app or removes unselected data. Capture has production privileges; reader
+jobs receive completed export access, and validators receive isolated restored data.
 
-`validateCommand ABSOLUTE_RESTORED_DIRECTORY` rejects unsupported formats before
-import, creates disposable databases and checks application relationships. It
-does not execute native production restore hooks or start the actual application.
-Production data, service sockets, credentials, mail and webhook configurations
-are not required. The executor supplies read-only restored data (conventionally
-`/input`), read-only `/nix/store`, private writable `/tmp`, a private PID/network
-namespace with loopback, and an unprivileged user with no inherited environment.
-Its restored copy, including the root directory, database archive and markers,
-must be readable/traversable by that account. Capture preserves a private
-`0700` root; a read-only bind alone does not perform a root-to-user ownership
-handoff. Copy or adjust permissions on the disposable restored copy before
-entering the sandbox, without exposing production state.
-It must also supply `/bin/sh` as a symlink to a Nix-store shell as required by
-the public Primitives PostgreSQL helper. Do not bind the host `/bin` or `/etc`.
-The executor is responsible for final child teardown and scratch disposal.
-
-`reliability-manifest.json` is reserved for executor metadata. Interface version,
-stored artifact format and Apps release version are distinct. Executor metadata
-does not replace the owner format marker. Neither command receives production
-backup credentials, and validators use only disposable database authentication.
-
-### Capture permissions and termination budget
-
-Capture is a privileged host operation. Grant read access to the folders resolved
-from the unit's `stateRefs`, and write access to the private output directory and
-the corresponding `/run/lock/apps-<unit>-recovery.lock`. Vaultwarden additionally
-needs native PostgreSQL preparation/cleanup permissions for its declared database
-staging state, local PostgreSQL socket access, and the native tools' user lookup
-and privilege-switch facilities. Both commands need permission to query, stop
-and start their own systemd service through the local service manager. These
+Capture is a privileged host operation. The root-owned native capture service
+reads the application's state folders and writes its operation-private pending
+directory. Its persistent `producer.lock` serializes phase entry; the native unit
+and owned attempt record serialize the whole operation across phase boundaries.
+Vaultwarden additionally
+needs local PostgreSQL socket access as the existing native OS/DB `postgres`
+identity, and the native tools' user lookup and privilege-switch facilities.
+No database password prompt or password-file credential is used. Each native capture service needs permission to query, stop
+and start its application service through the local service manager. These
 permissions belong only to capture; never expose them to validation.
 
-The app capture lock serializes Apps callers. The consumer must also serialize
-any other native PostgreSQL capture callers sharing the same staging state;
-an Apps lock cannot control an independent backup job. Do not run another
-service-management operation concurrently with a capture's activity check and
-pause/resume sequence.
+Each Vaultwarden dump writes operation-private output, with no shared Clan
+staging/preparation/cleanup. Automatic app activation is inhibited during capture.
+Do not concurrently manage the application unit or introduce another database
+writer during capture. Inhibition and the PostgreSQL guard do not prevent a
+privileged administrator from deliberately changing that boundary.
 
-Service queries are bounded to 20 seconds, stop/start and native cleanup to
-60 seconds each, and individual preparation/copy steps to 600 seconds each.
-Timed commands have a further 5-second kill allowance. Reserve at least
-135 seconds for Vaultwarden cleanup and 70 seconds for LiveSync cleanup after
-catchable termination, plus executor overhead. The executor must not SIGKILL
-the handler before that grace expires. Handlers terminate and reap capture
-children before resuming writes. Repeated catchable signals are ignored during
-cleanup. SIGKILL, host failure and a systemd service that cannot restart require
-operator recovery; no shell handler can guarantee resumption in those cases.
+Service queries are bounded to 20 seconds, stop/start to
+60 seconds each, and individual dump/copy steps to 600 seconds each.
+Timed commands have a further 5-second kill allowance. The finalizer's bounded
+manager calls, publication lock and possible reclaims total at most 290 seconds,
+leaving native service overhead within the six-minute stop budget. Preserve that
+budget. An uncertain manager/cgroup result, interrupted ownership or incomplete
+cleanup retains the attempt and activation inhibit, blocking later producer
+phases and invocations. Inspect the exact owned attempt, native unit and cgroups
+before operator recovery; do not delete its record, inhibit or payload to bypass
+the barrier. A selected `current` generation is never cleanup input. SIGKILL,
+host failure and failed app restoration cannot promise automatic resumption.
 
 ## Semantic acceptance
+
+`bin/validate` imports disposable databases and checks the application-specific
+cross-store invariants below. It does not start Vaultwarden or an Obsidian
+LiveSync client and does not prove runnable-application acceptance, production
+restoration or successful client synchronization.
 
 Vaultwarden validation imports the database and checks relationships between
 users/organizations, ciphers and attachments, including the stored attachment
@@ -354,30 +352,58 @@ successful synchronization by a particular Obsidian client.
 
 ## Lifecycle, historical backups and migration
 
-Only enabled recipes publish capture units. `disabled-retained` preserves state
-and secret metadata but withdraws runtime, ingress and recovery declarations.
-Setting the selection to `null` withdraws declarations. An executor selecting a
-missing ID must fail explicitly; absence never authorizes deletion of historical
-backups.
+Only enabled, opted-in recipes publish native capture services and command
+packages. `disabled-retained` preserves state and secret metadata, including
+opted-in export state, but withdraws runtime, ingress and runnable exporters.
+Turning exports off or setting the selection to `null` performs no filesystem
+deletion; null also withdraws declarations. These changes never authorize deletion
+of historical backups.
 
-Before changing versions or removing a producer, retain its pinned configuration
-and compatible validator closure in a separate recovery environment. Root those
-closures against garbage collection and preserve application/database versions,
-extensions and restoration policy. Retained state on its own is not a preserved
-validator. A new format requires a compatible old handler or an explicitly tested
-migration; do not relabel an older artifact to bypass its version check.
+Before disabling, removing or upgrading a producer, retain its pinned
+configuration and compatible validator closure under a separate GC root. Preserve
+application/database versions, extensions and restoration policy. Retained state
+and the `validatorStorePath` metadata string do not preserve a closure; metadata
+is provenance and never chooses executable input.
 
-The current dependency baseline is Vaultwarden 1.37.3, PostgreSQL 18.6 and
-CouchDB 3.5.2. PostgreSQL 17 backups and data directories from Apps v0.1.0 are
-not implicitly accepted by the PostgreSQL 18 helper. Keep the old environment
-and perform a separately tested migration before adopting the new database
-major. The earlier state rename from `livesync-couchdb` to `obsidian` does not
-change the stable recovery ID `livesync`; see the README for state and secret
-binding migration.
+Same-host validation requires a matching wrapper with the supported envelope
+above. Older wrappers that require a disposable validation host retain that
+restriction; do not wrap or invoke their bare handlers on the application host.
+Retain the supported `config.system.build.appsVaultwardenExport` or
+`appsLiveSyncExport` closure after adopting a release. Compatible validators can
+validate historical captures without `export.json`; readers require publication
+metadata and do not silently treat those captures as new exports. Existing
+`formatVersion` markers remain authoritative. A new format requires a compatible
+old handler or an explicitly tested migration; never relabel an artifact to
+bypass its version check.
+
+The database baseline is PostgreSQL 18.6 and CouchDB 3.5.2; Apps supplies
+Vaultwarden 1.37.3. PostgreSQL 17 backups and directories are not implicitly
+accepted by the PostgreSQL 18 helper. Keep the old environment and perform a
+separately tested migration before adopting the new database major, as described
+in [dependencies and migration](../README.md#dependencies-and-migration).
+When adopting the current Obsidian recipe from a legacy direct declaration,
+replace `@clanwright/apps-livesync` with `@clanwright/apps-obsidian` and update
+instance references to `<machine>--app-obsidian`. Update state references from
+`livesync-couchdb` to `obsidian`; CouchDB data remains under `/var/lib/couchdb`.
+The administrator INI binding defaults to `obsidian-admin-ini`: prepare that
+existing SOPS binding before activation, or explicitly set `adminConfigSecretName`
+to the preserved binding. Rename declarations and references without moving or
+deleting application data or regenerating credentials. The stable recovery ID
+remains `livesync`; Vaultwarden's state, secret and recovery identities are unchanged.
 
 ## Acceptance boundary
 
-With native Linux builders, run the public-interface checks explicitly:
+Available source evidence consists of independent review, pure Nix evaluation,
+standalone Clan composition, package builds, and ordinary native process,
+database and tool checks. Release gates use the final compatible published input
+graph. No new VM, test host or privilege/credential workaround is part of these
+gates. Actual manager/root-peer, same-host, reader lifetime and network behavior
+require the native evidence below; their deferred observation does not block
+source acceptance or release publication.
+
+With appropriate Linux builders and compatible pinned inputs, run the retained
+ordinary checks and preserve their readable output (choose native recovery-runtime
+architecture as appropriate):
 
 ```sh
 mkdir -p state
@@ -386,51 +412,51 @@ nix build --no-link --print-out-paths \
   .#checks.x86_64-linux.http-runtime \
   .#checks.aarch64-linux.recovery-runtime \
   .#checks.aarch64-linux.export-tools \
-  .#checks.aarch64-linux.validator-isolation \
-  .#checks.aarch64-linux.export-runtime \
   > state/recovery-checks.log 2>&1
 ```
 
-`export-tools` builds the public reader/validator packages and native stage
-scripts. `validator-isolation` exercises the privileged-to-unprivileged handoff,
-namespace and descriptor isolation, effective preparation/execution resource
-limits, cross-application admission, cancellation, caller death and descendant
-cleanup in a disposable ARM Linux VM. `export-runtime` uses an ARM test driver with a complete
-x86_64 Linux VM, because the current Network host composition supports x86_64
-only. It imports the actual Clan machine module and the shipped native Restic
-example. TCG emulation is used when hardware acceleration is unavailable; report
-that boundary explicitly rather than calling it native x86 hardware evidence.
-The same-host scenarios use Nix-defined shell fixtures with the existing NixOS
-test driver. They check HTTP availability, service identity and live fixture
-data while the public validator processes restored copies, including rejection
-of an unsupported format. These test definitions do not themselves establish
-a passing runtime result.
+`contract` evaluates actual recipe declarations, lifecycle withdrawal/retention
+and shared Network composition. `http-runtime` uses a local Caddy/backend fixture,
+without a real application database. `export-tools` builds the reader/validator
+packages and native stages. `recovery-runtime` checks disposable database
+capture/import and semantic invariants through the public Primitives SDK with a
+substituted database actor. Its caller glue and effective DB packages are selected
+through public Clan/Primitives module evaluation; package/component identities
+must agree with the corresponding recipe cohort. A disposable-only prepared
+transaction setting enables the session-independent writer rejection control.
+It exercises idle app-role and prepared-transaction rejection followed by
+fresh capture/import, regular independent copies and the semantic checks; it
+does not simulate manager acceptance. It retains `check.log` and fixture
+diagnostics in its output. Run it on the builder's native supported architecture;
+an ARM pass does not prove native x86 execution or add an ARM Vaultwarden package
+export. Unsupported/emulated execution must be reported explicitly, never as a
+native runtime pass. Fresh nested-consumer locking and coordinated upgrade checks
+are described in the [README](../README.md#verification-and-release-acceptance).
 
-The recovery runtime derivation retains a readable `check.log` and fixture
-diagnostics in its output. Its databases and service controller are disposable;
-it invokes the same owner factories and public Primitives commands as the
-recipes. The composition check verifies the actual native recipe declarations.
-`checks.aarch64-linux.recovery-runtime` runs the same suite natively on ARM Linux;
-this does not add an ARM Vaultwarden package export. Use the runtime check that
-matches the builder's native architecture.
+Use one joint Apps/Reliability acceptance matrix; do not duplicate the database
+suite in Reliability. Record the tested revision/input closures, actual runner,
+commands, outcomes and readable artifacts for each row. Review, evaluation,
+theoretical flags and historical results are not runtime PASS. The following
+rows are **PREDEPLOY / NOT OBSERVED: mandatory before deployment for the
+current source**. No root/systemd runner is currently available for these paths;
+historical observations cannot certify changed code:
 
-For the separate x86 `recovery-runtime` derivation under user-mode emulation on
-the current ARM-hosted builder, x86 Erlang's default JIT mapping fails before
-CouchDB can start (`prim_tty`/`nouser`). A test-source-only single-mapping JIT probe
-starts, but the public isolated helper clears that test flag. Native ARM runtime
-evidence must not be described as native x86 runtime acceptance. The release
-gate uses the complete recovery suite on a native supported Linux builder;
-native x86 runtime is an additional check, not a mandatory release gate.
-That user-mode emulated x86 check is not a release gate; the complete-VM
-`export-runtime` integration check above remains required. The test
-source CouchDB uses a store CA bundle through Erlang configuration; this
-configuration is not inherited by the isolated validator.
+| Native boundary | Required evidence |
+| --- | --- |
+| Publication and readers | Overlapping publication/readers; independent destination A/B copies; nested-input rejection; invalid payload shape/links and backwards clock fail before commit; failed captures preserve original age; every precommit failure preserves old complete, while postcommit failure/cancellation retains new complete; selected current survives stale pending status and normal deactivation; copying finishes under lock before reclaim of only owned unselected data; reclaim before next allocation and actual two-producer payload/workspace peak |
+| Native Restic composition | All four actual jobs upload while capture can continue; restored copies validate with retained matching closures; success, upload exit 3/error, partial preparation and cancellation with descendants; postStart cancellation; foreign/pre-existing reader, failed mkdir/partial creation/interruption before ownership evidence; cleanup failure followed by next attempt; independent A/B ownership; actual process stop before reader deletion |
+| Actual capture | Root-to-postgres peer authentication and private output descriptor; native activation inhibition and manager/database quiescence; prior active/inactive state recorded before mutation; pre/post failure and TERM preserve or restore that state; unresolved attempts block every producer phase/instance and allocation; failure to restore retains the barrier |
+| Same-host continuity | Continuous HTTP checks, unchanged MainPID/InvocationID, live SQL/CouchDB data and file hashes while both validators process restored copies |
+| Sandbox boundary | UID/GID 65534, zero capabilities, cleared environment, no host credentials or inherited FD 9, null stdin, read-only input/store, loopback-only network and descendant isolation; private modes; rejection of links and FIFO/special files |
+| Whole-operation bounds and admission | Effective preparation plus execution MemoryMax 1 GiB, swap 0, TasksMax 128, CPUQuota 100%, nice 10 and IOWeight 10; host-wide cross-app admission; launcher SIGKILL does not release the barrier prematurely |
+| Failure and uncertain teardown | Timeout, caller TERM, killed monitor, handoff error, cancellation before creation, foreign-unit refusal and populated/uncertain cgroup preserve scratch and ownership until confirmed teardown |
+| Native network and authentication | Stable certificate identities/readers and host ACME authority; actual Caddy startup gate under its service UID/sandbox, listeners/TLS and atomic failed reload retaining prior routes; real Vaultwarden error records/trusted-proxy parsing, journal ingestion and Fail2ban enforcement; unsafe request/auth free strings absent from configured HTTP-error sinks |
 
-Standalone composition and disposable runtime tests do not constitute a
-production restore, deployment or acceptance of a particular backup executor.
-Reliability v0.1.0's public documentation describes a private validation sandbox
-but does not establish compatibility with these handlers' `/bin/sh` requirement
-or capture cleanup budget. Verify those details and the root-to-unprivileged
-handoff in the consumer before commissioning. Keep pinned configuration and
-handler closures separately because its v1 manifest does not record owner-release
-provenance automatically.
+Actual predeployment execution must observe all rows on the intended native
+manager using the same public packages and consumer composition. A test
+definition, source review or ordinary process fixture cannot close them.
+Standalone checks do not prove production DNS, certificates, firewall packet
+behavior, live client traffic, database-major migration, production restoration,
+or acceptance of a particular backup destination. Keep pinned configuration and
+matching retained validator closures separately from backup metadata. The current
+policy is recorded in [ADR 0004](adr/0004-source-and-predeployment-acceptance.md).

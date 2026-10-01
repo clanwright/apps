@@ -1,6 +1,8 @@
 # Let native services own the export lifecycle
 
-Status: accepted and implemented for v0.4.0; disposable runtime acceptance passed.
+Status: historical decision, implemented for v0.4.0; disposable runtime acceptance
+passed for that revision. Current verification and publication semantics follow
+[ADR 0004](0004-source-and-predeployment-acceptance.md).
 
 Apps uses NixOS systemd declarations and the existing capture commands for the
 native export integration. `ExecStartPre` prepares private staging, `ExecStart`
@@ -42,3 +44,6 @@ The disposable-host restriction above describes v0.4.0. For the supported
 same-host path, [ADR 0003](0003-same-host-validation.md) supersedes the validator
 lifecycle and failure-cleanup paragraphs. Export publication and reader lifetime
 are unchanged.
+
+The historical runtime results above are not acceptance of later source changes.
+The current source/predeployment split supersedes the old VM gate policy.

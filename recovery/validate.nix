@@ -5,7 +5,7 @@
   lib,
   pkgs,
   id,
-  validateCommand,
+  executable,
 }:
 assert builtins.match "[a-z][a-z0-9-]*" id != null;
 let
@@ -56,7 +56,7 @@ let
           ${pkgs.util-linux}/bin/setpriv \
             --reuid 65534 --regid 65534 --clear-groups \
             --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
-            ${lib.escapeShellArg (toString validateCommand)} /input
+            ${lib.escapeShellArg (lib.getExe executable)} /input
     '';
   };
 in

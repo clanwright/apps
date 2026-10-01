@@ -294,17 +294,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1790711712,
-        "narHash": "sha256-g4ACl1iGjPRQ1vR3+NhztezTD2qUtYsvdlCtsxZ2OAc=",
+        "lastModified": 1790798156,
+        "narHash": "sha256-3COGQWxuPGfBFX1tRqCqkuxHgLYyAGqSrdZn5L9/x9A=",
         "owner": "clanwright",
         "repo": "network",
-        "rev": "a216e7b311c2f2e36fa0e0ee137c867acb04a54e",
+        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "network",
-        "rev": "a216e7b311c2f2e36fa0e0ee137c867acb04a54e",
+        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
         "type": "github"
       }
     },
@@ -472,17 +472,17 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1790605117,
-        "narHash": "sha256-NNr+UYbf7ImcAoBqeCWIOogYY0uC0SEtx7xYKhmHzJM=",
+        "lastModified": 1790798352,
+        "narHash": "sha256-bNooAd5dANMhvoMfgeB1usU1+f9Mu71w3g1g0T10V6U=",
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "77e744cadad532e8458b19a8df71a97794434bf7",
+        "rev": "8e64d6c436af087684acaed0cc3190a3062c2233",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "77e744cadad532e8458b19a8df71a97794434bf7",
+        "rev": "8e64d6c436af087684acaed0cc3190a3062c2233",
         "type": "github"
       }
     },
