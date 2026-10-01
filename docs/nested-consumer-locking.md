@@ -30,8 +30,8 @@ A standalone checkout can evaluate successfully while a fresh consumer fails to
 resolve nested relative inputs. The gate exercises ordinary public imports and
 locking rather than reconstructing lock nodes. Native source projections compare
 what Nix actually resolves, including `follows`, cycles and subdirectory paths.
-The accepted empty callable `data-mesher` export is a pinned Clan import
-compatibility boundary; it is not an application runtime service.
+Network v1.0.1 retains Clan's native DataMesher input and inherited follows.
+DataMesher remains disabled by default and is not an application runtime service.
 
 Each release must pass this gate alongside the [ordinary checks](../README.md#verification-and-release-acceptance).
 Historical relative-input diagnosis is retained in

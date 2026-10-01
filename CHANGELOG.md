@@ -1,3 +1,10 @@
+# Apps v1.0.1
+
+Adopts published Network v1.0.1 (`e30e08028b88cd4e9706a0644e1f0273ebb88fdb`)
+and its native disabled DataMesher ownership. Primitives remains v1.0.0;
+application, recovery and package contracts are unchanged. Actual runtime
+PREDEPLOY acceptance remains **NOT OBSERVED**.
+
 # Apps v1.0.0
 
 Apps provides declarative Clan recipes for Obsidian LiveSync and Vaultwarden,
