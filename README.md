@@ -1,3 +1,7 @@
+> **Archived.** This module now lives in the Clanwright monorepository as
+> `bricks/apps` (https://github.com/ibelyasov/clanwright) and is no longer
+> developed or released here.
+
 # Clanwright Apps
 
 Declarative Clan recipes for Obsidian LiveSync and Vaultwarden. The public `clanModules.default` module selects apps by machine and contributes ordinary Clan inventory instances. The recipes use the public Primitives database/recovery SDK and Network native NixOS interfaces for certificates, Caddy, firewall, and private ingress protection. They do not provision DNS, ACME provider credentials, SOPS values, or Tailscale enrollment.
